@@ -22,11 +22,11 @@ jobs:
         working-directory: withyou-app
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: withyou-app/package-lock.json
 
@@ -211,7 +211,7 @@ jobs:
           unzip -l WithYou-Sideloadly.ipa | head -n 20
           cp WithYou-Sideloadly.ipa ../WithYou-Sideloadly.ipa
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: WithYou-ipa-sideloadly
           path: withyou-app/WithYou-Sideloadly.ipa
