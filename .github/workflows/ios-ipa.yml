@@ -40,25 +40,37 @@ jobs:
 
       - name: Build archive (no codesign)
         working-directory: withyou-app/ios
+        env:
+          EXPO_PUBLIC_WITHYOU_API: https://crew.kingdom.forum/withyou
         run: |
           set -euo pipefail
+          export NODE_BINARY="$(command -v node)"
+          echo "NODE_BINARY=$NODE_BINARY"
           ls -la
-          WORKSPACE=$(ls -d *.xcworkspace 2>/dev/null | head -n 1)
+          WORKSPACE=$(ls -d *.xcworkspace | head -n 1)
           echo "WORKSPACE=$WORKSPACE"
           xcodebuild -list -workspace "$WORKSPACE"
-          SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" -json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['workspace']['schemes'][0])")
+          # Prefer app scheme WithYou (not Pods like EXConstants)
+          SCHEME="WithYou"
+          if ! xcodebuild -list -workspace "$WORKSPACE" -json | grep -q "\"$SCHEME\""; then
+            SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" -json | python3 -c "import sys,json; d=json.load(sys.stdin); ss=d['workspace']['schemes']; print(next((s for s in ss if 'WithYou' in s and 'Pods' not in s), ss[0]))")
+          fi
           echo "SCHEME=$SCHEME"
+          set -o pipefail
           xcodebuild \
             -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -archivePath "$PWD/build/WithYou.xcarchive" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM="" \
-            archive
+            ONLY_ACTIVE_ARCH=NO \
+            archive 2>&1 | tee /tmp/xcodebuild.log | tail -n 80
+          test -d "$PWD/build/WithYou.xcarchive"
 
       - name: Pack unsigned IPA
         working-directory: withyou-app/ios
@@ -67,8 +79,9 @@ jobs:
           mkdir -p Payload
           APP=$(find build/WithYou.xcarchive/Products/Applications -name "*.app" | head -n 1)
           echo "APP=$APP"
+          test -n "$APP"
           cp -R "$APP" Payload/
-          zip -r WithYou-unsigned.ipa Payload
+          zip -qry WithYou-unsigned.ipa Payload
           ls -la WithYou-unsigned.ipa
           cp WithYou-unsigned.ipa ../WithYou-unsigned.ipa
 
