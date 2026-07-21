@@ -461,7 +461,7 @@ class Handler(BaseHTTPRequestHandler):
         # Absolute public URLs (same host, /withyou path)
         apk_href = "https://crew.kingdom.forum/withyou/install/apk"
         ipa_href = "https://crew.kingdom.forum/withyou/install/ipa"
-        ver = "1.1.4"
+        ver = "1.2.0"
         html = f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"/>

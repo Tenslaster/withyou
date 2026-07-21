@@ -40,11 +40,13 @@ module.exports = {
           'WithYou can update your location in the background for your partner only.',
         UIBackgroundModes: ['location', 'fetch', 'remote-notification'],
       },
-      config: googleMapsKey
+      ...(googleMapsKey
         ? {
-            googleMapsApiKey: googleMapsKey,
+            config: {
+              googleMapsApiKey: googleMapsKey,
+            },
           }
-        : undefined,
+        : {}),
     },
     android: {
       package: 'com.withyou.pair',
@@ -72,13 +74,15 @@ module.exports = {
         'android.permission.POST_NOTIFICATIONS',
         'android.permission.INTERNET',
       ],
-      config: googleMapsKey
+      ...(googleMapsKey
         ? {
-            googleMaps: {
-              apiKey: googleMapsKey,
+            config: {
+              googleMaps: {
+                apiKey: googleMapsKey,
+              },
             },
           }
-        : undefined,
+        : {}),
     },
     plugins: [
       [
