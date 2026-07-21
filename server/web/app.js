@@ -364,12 +364,26 @@
     }
   }
 
+  function cleanInvite(raw) {
+    return String(raw || "")
+      .toUpperCase()
+      .replace(/[^A-F0-9]/g, "")
+      .slice(0, 8);
+  }
+
   async function joinPair() {
     const name = $("name").value.trim();
-    const invite = $("invite").value.trim();
+    const invite = cleanInvite($("invite").value);
+    $("invite").value = invite;
     const emoji = $("emoji").value.trim() || "💗";
-    if (!name || !invite) {
-      $("pair-err").textContent = "Name + invite code required.";
+    if (!name) {
+      $("pair-err").textContent = "Type your name first (e.g. Alex).";
+      show($("pair-err"));
+      return;
+    }
+    if (!invite || invite.length < 4) {
+      $("pair-err").textContent =
+        "Type the 6-character invite code from your partner (Create pair).";
       show($("pair-err"));
       return;
     }

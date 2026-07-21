@@ -31,6 +31,8 @@ PORT = int(os.environ.get("WITHYOU_PORT", "9610") or "9610")
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DATA_FILE = DATA_DIR / "pairs.json"
 WEB_DIR = Path(__file__).resolve().parent / "web"
+DIST_DIR = Path(__file__).resolve().parent.parent / "dist"
+FILE_CHUNK = 64 * 1024
 
 # Static PWA assets (no IPA needed — iPhone: Safari → Share → Add to Home Screen)
 _WEB_MIME = {
@@ -234,6 +236,13 @@ class Handler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
 
+    def do_HEAD(self) -> None:  # noqa: N802
+        # Same routes as GET but without body (for download probes / curl -I)
+        self._get_or_head(body=False)
+
+    def do_GET(self) -> None:  # noqa: N802
+        self._get_or_head(body=True)
+
     def _serve_web(self, path: str, *, under_withyou: bool = False) -> bool:
         """Serve PWA static files. Returns True if handled."""
         key = path if path.startswith("/") else f"/{path}"
@@ -286,7 +295,155 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
         return True
 
-    def do_GET(self) -> None:  # noqa: N802
+    def _send_install_page(self, *, body: bool) -> None:
+        apk = DIST_DIR / "WithYou.apk"
+        ipa = DIST_DIR / "WithYou.ipa"
+        if not ipa.is_file():
+            ipa = DIST_DIR / "WithYou-Sideloadly.ipa"
+
+        def sz(p: Path) -> str:
+            if not p.is_file():
+                return "missing"
+            n = p.stat().st_size
+            return f"{n / (1024 * 1024):.1f} MB"
+
+        apk_ok = apk.is_file()
+        ipa_ok = ipa.is_file()
+        # Absolute public URLs (same host, /withyou path)
+        apk_href = "https://crew.kingdom.forum/withyou/install/apk"
+        ipa_href = "https://crew.kingdom.forum/withyou/install/ipa"
+        html = f"""<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<meta name="theme-color" content="#0f0a12"/>
+<title>WithYou - Install</title>
+<style>
+body{{margin:0;min-height:100vh;background:#0f0a12;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+display:flex;align-items:center;justify-content:center;padding:20px}}
+.w{{max-width:440px;width:100%}} h1{{color:#f472b6;margin:0 0 6px;font-size:1.75rem}}
+.t{{color:#94a3b8;margin:0 0 18px;line-height:1.45}}
+.c{{background:#1a1220;border:1px solid #2d2438;border-radius:16px;padding:16px;margin-bottom:14px}}
+.c h2{{margin:0 0 6px;font-size:1.05rem}} .m{{color:#64748b;font-size:.85rem;margin:0 0 12px}}
+a.btn{{display:block;text-align:center;background:#f472b6;color:#0f0a12;font-weight:800;text-decoration:none;
+padding:16px;border-radius:12px;font-size:1rem}} a.btn:active{{opacity:.9}}
+a.btn.off,span.off{{display:block;text-align:center;background:#2d2438;color:#64748b;padding:16px;border-radius:12px;font-weight:700}}
+ol{{margin:12px 0 0;padding-left:1.2rem;color:#94a3b8;font-size:.85rem;line-height:1.5}}
+.warn{{color:#fbbf24;font-size:.8rem;margin-top:10px;line-height:1.4}}
+.l{{text-align:center;margin-top:16px}} .l a{{color:#94a3b8}}
+</style></head><body><div class="w">
+<h1>WithYou</h1>
+<p class="t">Private couple app - install the Android APK on your phone.</p>
+<div class="c">
+<h2>Android APK</h2>
+<p class="m">{sz(apk)} · com.withyou.pair</p>
+{"<a class='btn' href='"+apk_href+"' download='WithYou.apk'>Download APK</a>" if apk_ok else "<span class='off'>APK missing on server</span>"}
+<ol>
+<li>Open this page in <b>Chrome</b> on Android</li>
+<li>Tap Download APK (file is ~70 MB - wait for it)</li>
+<li>Allow <b>Install unknown apps</b> for Chrome if asked</li>
+<li>Open the file in Downloads and Install</li>
+</ol>
+<p class="warn">If the download fails: use Wi-Fi, open the link again, or copy:<br>{apk_href}</p>
+</div>
+<div class="c">
+<h2>iPhone IPA</h2>
+<p class="m">{sz(ipa)} · Sideloadly on Windows (not installable from Safari alone)</p>
+{"<a class='btn' href='"+ipa_href+"' download='WithYou.ipa'>Download IPA</a>" if ipa_ok else "<span class='off'>IPA missing</span>"}
+</div>
+<p class="l"><a href="https://crew.kingdom.forum/withyou/">Open web app</a></p>
+</div></body></html>"""
+        data = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        if body:
+            self.wfile.write(data)
+
+    def _send_dist_file(
+        self,
+        filename: str,
+        content_type: str,
+        *,
+        body: bool,
+        download_as: Optional[str] = None,
+    ) -> None:
+        if ".." in filename or "/" in filename or "\\" in filename:
+            self._json(400, {"error": "bad name"})
+            return
+        path = (DIST_DIR / filename).resolve()
+        try:
+            if not path.is_file() or not str(path).startswith(str(DIST_DIR.resolve())):
+                self._json(404, {"error": f"missing {filename}"})
+                return
+            size = path.stat().st_size
+        except OSError:
+            self._json(404, {"error": f"missing {filename}"})
+            return
+
+        out_name = download_as or filename
+        safe = "".join(c for c in out_name if c.isalnum() or c in "._-")
+        # Range support (phones resume big APKs)
+        start, end = 0, size - 1
+        status = 200
+        rng = (self.headers.get("Range") or "").strip()
+        if rng.lower().startswith("bytes=") and "-" in rng:
+            spec = rng.split("=", 1)[1]
+            if "," not in spec:
+                a, b = spec.split("-", 1)
+                try:
+                    if a == "":
+                        n = int(b)
+                        start = max(0, size - n)
+                    else:
+                        start = int(a)
+                        end = int(b) if b else size - 1
+                    end = min(end, size - 1)
+                    if 0 <= start <= end:
+                        status = 206
+                    else:
+                        start, end = 0, size - 1
+                        status = 200
+                except ValueError:
+                    start, end = 0, size - 1
+                    status = 200
+        length = end - start + 1
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(length))
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header(
+            "Content-Disposition",
+            f'attachment; filename="{safe}"; filename*=UTF-8\'\'{safe}',
+        )
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "public, max-age=300")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+        self.send_header("Cross-Origin-Resource-Policy", "cross-origin")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        if not body:
+            return
+        try:
+            with open(path, "rb") as f:
+                f.seek(start)
+                left = length
+                while left > 0:
+                    chunk = f.read(min(FILE_CHUNK, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+        except (OSError, BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _get_or_head(self, *, body: bool) -> None:
         raw_path = urlparse(self.path).path
         path = raw_path.rstrip("/") or "/"
         under_withyou = path.startswith("/withyou")
@@ -294,10 +451,32 @@ class Handler(BaseHTTPRequestHandler):
         if under_withyou:
             path = path[len("/withyou") :] or "/"
 
+        # Install page + APK/IPA (mobile-friendly; Range + CORS for phone Chrome)
+        if path in ("/install", "/download", "/downloads"):
+            self._send_install_page(body=body)
+            return
+        if path in ("/install/apk", "/download/apk", "/downloads/apk", "/WithYou.apk"):
+            self._send_dist_file(
+                "WithYou.apk",
+                "application/vnd.android.package-archive",
+                body=body,
+            )
+            return
+        if path in ("/install/ipa", "/download/ipa", "/downloads/ipa", "/WithYou.ipa"):
+            name = "WithYou.ipa"
+            if not (DIST_DIR / name).is_file():
+                name = "WithYou-Sideloadly.ipa"
+            self._send_dist_file(name, "application/octet-stream", body=body, download_as="WithYou.ipa")
+            return
+
         # PWA (browser) — iPhone: Safari → Share → Add to Home Screen
         if path not in ("/health", "/me", "/partner", "/history"):
-            if self._serve_web(path, under_withyou=under_withyou):
+            if body and self._serve_web(path, under_withyou=under_withyou):
                 return
+            if not body:
+                # HEAD for static web: try serve then ignore body
+                if self._serve_web(path, under_withyou=under_withyou):
+                    return
 
         if path in ("/health",):
             self._json(
@@ -423,12 +602,18 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/pair/join":
+            # Accept spaces / dashes / lowercase; codes are 6 hex chars
             code = re.sub(r"[^A-Fa-f0-9]", "", str(data.get("invite_code") or "")).upper()
             name = str(data.get("display_name") or "Partner").strip()[:32] or "Partner"
             emoji = str(data.get("emoji") or "💗").strip()[:8] or "💗"
             platform = str(data.get("platform") or "").strip()[:16]
             if len(code) < 4:
-                self._json(400, {"error": "Invalid invite code"})
+                self._json(
+                    400,
+                    {
+                        "error": "Invalid invite code — need the 6-character code from Create pair",
+                    },
+                )
                 return
             with _lock:
                 pair = None
@@ -437,11 +622,21 @@ class Handler(BaseHTTPRequestHandler):
                         pair = p
                         break
                 if not pair:
-                    self._json(404, {"error": "Invite not found"})
+                    self._json(
+                        404,
+                        {
+                            "error": "Invite not found — check the code, or create a new pair",
+                        },
+                    )
                     return
                 members = pair.setdefault("members", {})
                 if len(members) >= 2:
-                    self._json(409, {"error": "Pair already full (2 devices max)"})
+                    self._json(
+                        409,
+                        {
+                            "error": "Pair already full (2 phones max). Create a new pair.",
+                        },
+                    )
                     return
                 device_id = secrets.token_hex(8)
                 token = secrets.token_hex(24)

@@ -7,11 +7,13 @@ import {
   ActivityIndicator,
   Alert,
   AppState,
+  KeyboardAvoidingView,
   Platform,
   Pressable,
   RefreshControl,
   SafeAreaView,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -38,6 +40,14 @@ const NAME_KEY = 'withyou_name_v1';
 const APP_VERSION = Constants.expoConfig?.version || '1.0.0';
 const POLL_MS = 12000;
 const HEARTBEAT_MS = 20000;
+
+/** Invite codes are 6 hex chars (A–F, 0–9). Strip junk users often paste. */
+function cleanInviteCode(raw) {
+  return String(raw || '')
+    .toUpperCase()
+    .replace(/[^A-F0-9]/g, '')
+    .slice(0, 8);
+}
 
 // --- helpers ----------------------------------------------------------------
 async function api(path, { method = 'GET', token, body } = {}) {
@@ -258,23 +268,24 @@ export default function App() {
   }, [token, heartbeat, refresh]);
 
   const createPair = async () => {
-    if (!name.trim()) {
-      Alert.alert('Name', 'Enter your name first.');
-      return;
-    }
+    const n = (name || '').trim() || 'Me';
+    if (!(name || '').trim()) setName(n);
     setBusy(true);
     setErr('');
     try {
       const data = await api('/pair/create', {
         method: 'POST',
         body: {
-          display_name: name.trim(),
-          emoji,
+          display_name: n,
+          emoji: emoji || '💙',
           platform: Platform.OS,
         },
       });
+      if (!data?.token || !data?.invite_code) {
+        throw new Error('Server did not return an invite code. Is the API online?');
+      }
       await SecureStore.setItemAsync(TOKEN_KEY, data.token);
-      await SecureStore.setItemAsync(NAME_KEY, name.trim());
+      await SecureStore.setItemAsync(NAME_KEY, n);
       setToken(data.token);
       setCreatedInvite(data.invite_code || '');
       setPair({
@@ -285,6 +296,23 @@ export default function App() {
         distance_m: null,
         partner_joined: false,
       });
+      // Prompt to share code with partner
+      const code = data.invite_code;
+      Alert.alert(
+        'Invite code ready',
+        `Your code is ${code}\n\nShare it with your partner. They enter their name + this code and tap Join pair.`,
+        [
+          { text: 'OK' },
+          {
+            text: 'Share code',
+            onPress: () => {
+              Share.share({
+                message: `Join me on WithYou! Invite code: ${code}`,
+              }).catch(() => {});
+            },
+          },
+        ]
+      );
     } catch (e) {
       setErr(e.message || 'Create failed');
     } finally {
@@ -293,28 +321,48 @@ export default function App() {
   };
 
   const joinPair = async () => {
-    if (!name.trim() || !inviteInput.trim()) {
-      Alert.alert('Join', 'Name + invite code required.');
+    const n = (name || '').trim();
+    const code = cleanInviteCode(inviteInput);
+    if (!n) {
+      Alert.alert('Your name', 'Type your name in the first field (e.g. Alex), then Join.');
       return;
     }
+    if (!code || code.length < 4) {
+      Alert.alert(
+        'Invite code',
+        'Type the 6-character code your partner got after Create pair (letters A–F and digits).'
+      );
+      return;
+    }
+    setInviteInput(code);
     setBusy(true);
     setErr('');
     try {
       const data = await api('/pair/join', {
         method: 'POST',
         body: {
-          invite_code: inviteInput.trim(),
-          display_name: name.trim(),
-          emoji,
+          invite_code: code,
+          display_name: n,
+          emoji: emoji || '💗',
           platform: Platform.OS,
         },
       });
+      if (!data?.token) {
+        throw new Error('Join failed — no session from server');
+      }
       await SecureStore.setItemAsync(TOKEN_KEY, data.token);
-      await SecureStore.setItemAsync(NAME_KEY, name.trim());
+      await SecureStore.setItemAsync(NAME_KEY, n);
       setToken(data.token);
       setPair(data);
     } catch (e) {
-      setErr(e.message || 'Join failed');
+      const msg = e.message || 'Join failed';
+      if (e.status === 404) {
+        setErr('Invite not found. Check the code, or create a new pair.');
+      } else if (e.status === 409) {
+        setErr('This pair is already full (2 phones max). Create a new pair.');
+      } else {
+        setErr(msg);
+      }
     } finally {
       setBusy(false);
     }
@@ -387,56 +435,72 @@ export default function App() {
     return (
       <SafeAreaView style={styles.safe}>
         <StatusBar style="light" />
-        <ScrollView contentContainerStyle={styles.pad}>
-          <Text style={styles.logo}>WithYou</Text>
-          <Text style={styles.tagline}>
-            Private couple radar — location, battery, distance & last seen.
-            Only the two of you.
-          </Text>
-          <Text style={styles.label}>Your name</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="e.g. Alex"
-            placeholderTextColor="#64748b"
-            value={name}
-            onChangeText={setName}
-          />
-          <Text style={styles.label}>Emoji</Text>
-          <TextInput
-            style={styles.input}
-            value={emoji}
-            onChangeText={setEmoji}
-            maxLength={4}
-          />
-          <Pressable style={[styles.btn, styles.btnPrimary]} onPress={createPair} disabled={busy}>
-            {busy ? (
-              <ActivityIndicator color="#0f0a12" />
-            ) : (
-              <Text style={styles.btnPrimaryText}>Create pair (get invite code)</Text>
-            )}
-          </Pressable>
-          <View style={styles.divider}>
-            <Text style={styles.dividerText}>or join partner</Text>
-          </View>
-          <Text style={styles.label}>Invite code</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="6-character code"
-            placeholderTextColor="#64748b"
-            autoCapitalize="characters"
-            value={inviteInput}
-            onChangeText={setInviteInput}
-          />
-          <Pressable style={[styles.btn, styles.btnGhost]} onPress={joinPair} disabled={busy}>
-            <Text style={styles.btnGhostText}>Join pair</Text>
-          </Pressable>
-          {!!err && <Text style={styles.error}>{err}</Text>}
-          <Text style={styles.hint}>
-            API: {API_URL}
-            {'\n'}
-            Data stays on your server. Mutual consent only.
-          </Text>
-        </ScrollView>
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <ScrollView
+            contentContainerStyle={styles.pad}
+            keyboardShouldPersistTaps="handled"
+          >
+            <Text style={styles.logo}>WithYou</Text>
+            <Text style={styles.tagline}>
+              One of you creates a pair and gets a code. The other enters that
+              code to join. You both need a name.
+            </Text>
+            <Text style={styles.label}>1. Your name (required for both)</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. Alex"
+              placeholderTextColor="#64748b"
+              value={name}
+              onChangeText={setName}
+              autoCorrect={false}
+              returnKeyType="next"
+            />
+            <Text style={styles.label}>Emoji (optional)</Text>
+            <TextInput
+              style={styles.input}
+              value={emoji}
+              onChangeText={setEmoji}
+              maxLength={4}
+            />
+            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={createPair} disabled={busy}>
+              {busy ? (
+                <ActivityIndicator color="#0f0a12" />
+              ) : (
+                <Text style={styles.btnPrimaryText}>Create pair → get code</Text>
+              )}
+            </Pressable>
+            <View style={styles.divider}>
+              <Text style={styles.dividerText}>partner joins with code</Text>
+            </View>
+            <Text style={styles.label}>2. Invite code from partner</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. 30A070"
+              placeholderTextColor="#64748b"
+              autoCapitalize="characters"
+              autoCorrect={false}
+              autoComplete="off"
+              textContentType="oneTimeCode"
+              value={inviteInput}
+              onChangeText={(t) => setInviteInput(cleanInviteCode(t))}
+              maxLength={8}
+            />
+            <Pressable style={[styles.btn, styles.btnGhost]} onPress={joinPair} disabled={busy}>
+              <Text style={styles.btnGhostText}>Join pair</Text>
+            </Pressable>
+            {!!err && <Text style={styles.error}>{err}</Text>}
+            <Text style={styles.hint}>
+              How to pair:{'\n'}
+              • Phone A: type name → Create pair → share the 6-char code{'\n'}
+              • Phone B: type name → paste code → Join pair{'\n'}
+              {'\n'}
+              API: {API_URL}
+            </Text>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </SafeAreaView>
     );
   }
@@ -470,10 +534,24 @@ export default function App() {
           <View style={styles.banner}>
             <Text style={styles.bannerTitle}>Waiting for partner</Text>
             <Text style={styles.bannerBody}>
-              Share invite code{' '}
-              <Text style={styles.code}>{createdInvite || pair?.invite_code || '—'}</Text> so they
-              can join. Only 2 devices.
+              Share this code with your partner. They open WithYou, type{' '}
+              <Text style={styles.code}>their name</Text> + this code, then Join.
             </Text>
+            <Text style={[styles.code, { fontSize: 28, marginTop: 10, textAlign: 'center' }]}>
+              {createdInvite || pair?.invite_code || '—'}
+            </Text>
+            <Pressable
+              style={[styles.btn, styles.btnPrimary, { marginTop: 12 }]}
+              onPress={() => {
+                const code = createdInvite || pair?.invite_code || '';
+                if (!code) return;
+                Share.share({ message: `Join me on WithYou! Invite code: ${code}` }).catch(
+                  () => {}
+                );
+              }}
+            >
+              <Text style={styles.btnPrimaryText}>Share invite code</Text>
+            </Pressable>
           </View>
         ) : null}
 
