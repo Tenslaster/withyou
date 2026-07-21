@@ -15,6 +15,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.withyou.pair",
+      "icon": "./assets/icon.png",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSLocationWhenInUseUsageDescription": "WithYou shares your location with your partner so you both know you're safe.",
@@ -27,8 +28,9 @@
     },
     "android": {
       "package": "com.withyou.pair",
+      "versionCode": 2,
       "adaptiveIcon": {
-        "backgroundColor": "#0f0a12",
+        "backgroundColor": "#ffb6c1",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
