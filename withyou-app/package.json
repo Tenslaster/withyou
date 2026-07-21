@@ -1,0 +1,28 @@
+{
+  "name": "withyou-app",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "expo": "~57.0.7",
+    "expo-battery": "~57.0.1",
+    "expo-constants": "~57.0.6",
+    "expo-device": "~57.0.1",
+    "expo-linking": "~57.0.3",
+    "expo-location": "~57.0.5",
+    "expo-network": "~57.0.1",
+    "expo-secure-store": "~57.0.1",
+    "expo-status-bar": "~57.0.1",
+    "expo-task-manager": "~57.0.5",
+    "react": "19.2.3",
+    "react-native": "0.86.0",
+    "react-native-maps": "1.27.2"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web"
+  },
+  "private": true
+}

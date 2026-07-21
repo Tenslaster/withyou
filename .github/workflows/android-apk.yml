@@ -1,0 +1,72 @@
+name: Android APK (no EAS)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "withyou-app/**"
+      - ".github/workflows/android-apk.yml"
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: withyou-app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: withyou-app/package-lock.json
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.1.12297006"
+          yes | sdkmanager --licenses || true
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Expo prebuild Android
+        env:
+          EXPO_PUBLIC_WITHYOU_API: https://crew.kingdom.forum/withyou
+        run: npx expo prebuild --platform android --no-install --non-interactive
+
+      - name: Gradle assembleRelease
+        working-directory: withyou-app/android
+        env:
+          EXPO_PUBLIC_WITHYOU_API: https://crew.kingdom.forum/withyou
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Locate APK
+        id: apk
+        run: |
+          APK=$(find android -name "*.apk" -path "*/release/*" | head -n 1)
+          echo "path=$APK" >> $GITHUB_OUTPUT
+          ls -la "$APK"
+          cp "$APK" WithYou.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WithYou-apk
+          path: withyou-app/WithYou.apk
+          if-no-files-found: error
