@@ -17,31 +17,32 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: withyou-app/package-lock.json
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install SDK packages
         run: |
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.1.12297006"
+          set -euo pipefail
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
           yes | sdkmanager --licenses || true
 
       - name: Install npm deps
-        run: npm ci
+        run: npm ci --no-fund --no-audit
 
       - name: Expo prebuild Android
         env:
@@ -53,19 +54,21 @@ jobs:
         env:
           EXPO_PUBLIC_WITHYOU_API: https://crew.kingdom.forum/withyou
         run: |
+          set -euo pipefail
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          ./gradlew assembleRelease --no-daemon --warning-mode none
 
       - name: Locate APK
         id: apk
         run: |
+          set -euo pipefail
           APK=$(find android -name "*.apk" -path "*/release/*" | head -n 1)
-          echo "path=$APK" >> $GITHUB_OUTPUT
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
           ls -la "$APK"
           cp "$APK" WithYou.apk
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: WithYou-apk
           path: withyou-app/WithYou.apk
