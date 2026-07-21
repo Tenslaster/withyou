@@ -2,11 +2,20 @@
  * WithYou — private couple presence + deep partner intel
  * Polished product UI · live intel · care · SOS · stats
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  Component,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ActivityIndicator,
   Alert,
   AppState,
+  InteractionManager,
   KeyboardAvoidingView,
   Platform,
   RefreshControl,
@@ -56,7 +65,8 @@ const API_URL = (process.env.EXPO_PUBLIC_WITHYOU_API || DEFAULT_API).replace(/\/
 const TOKEN_KEY = 'withyou_token_v1';
 const NAME_KEY = 'withyou_name_v1';
 const APP_VERSION = Constants.expoConfig?.version || '1.0.0';
-const HEARTBEAT_MS = 20000;
+const HEARTBEAT_MS = 22000;
+const API_TIMEOUT_MS = 14000;
 
 const ACTIVITIES = [
   { id: 'home', label: '🏠 Home' },
@@ -104,25 +114,26 @@ function pairSignature(p) {
   return [
     p.distance_m,
     p.days_together,
-    m.battery,
+    m.battery != null ? Math.round(Number(m.battery)) : '',
     m.charging ? 1 : 0,
-    m.lat,
-    m.lng,
-    m.last_seen,
+    // Round GPS so tiny noise does not thrash re-renders
+    m.lat != null ? Number(m.lat).toFixed(4) : '',
+    m.lng != null ? Number(m.lng).toFixed(4) : '',
+    m.last_seen ? Math.floor(Number(m.last_seen) / 15) : '',
     m.online ? 1 : 0,
     m.mood,
     m.status_text,
     m.activity,
     m.place_name,
     m.love_note,
-    m.thinking_of_you_at,
+    m.thinking_of_you_at ? Math.floor(Number(m.thinking_of_you_at) / 30) : '',
     m.sos_active ? 1 : 0,
     m.motion,
-    pr.battery,
+    pr.battery != null ? Math.round(Number(pr.battery)) : '',
     pr.charging ? 1 : 0,
-    pr.lat,
-    pr.lng,
-    pr.last_seen,
+    pr.lat != null ? Number(pr.lat).toFixed(4) : '',
+    pr.lng != null ? Number(pr.lng).toFixed(4) : '',
+    pr.last_seen ? Math.floor(Number(pr.last_seen) / 15) : '',
     pr.online ? 1 : 0,
     pr.mood,
     pr.status_text,
@@ -148,7 +159,7 @@ const DEFAULT_REGION = {
 };
 
 // --- helpers ----------------------------------------------------------------
-async function api(path, { method = 'GET', token, body } = {}) {
+async function api(path, { method = 'GET', token, body, timeoutMs = API_TIMEOUT_MS } = {}) {
   const headers = {
     Accept: 'application/json',
     'Content-Type': 'application/json',
@@ -156,25 +167,93 @@ async function api(path, { method = 'GET', token, body } = {}) {
     'X-App-Version': APP_VERSION,
   };
   if (token) headers.Authorization = token;
-  const res = await fetch(`${API_URL}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  let data = null;
+
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer =
+    controller && timeoutMs > 0
+      ? setTimeout(() => {
+          try {
+            controller.abort();
+          } catch {
+            /* ignore */
+          }
+        }, timeoutMs)
+      : null;
+
   try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = { error: text || res.statusText };
+    const res = await fetch(`${API_URL}${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller?.signal,
+    });
+    const text = await res.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = { error: text || res.statusText };
+    }
+    if (!res.ok) {
+      const err = new Error((data && data.error) || `HTTP ${res.status}`);
+      err.status = res.status;
+      err.data = data;
+      throw err;
+    }
+    return data;
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      const err = new Error('Network timeout — try again');
+      err.status = 408;
+      throw err;
+    }
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  if (!res.ok) {
-    const err = new Error((data && data.error) || `HTTP ${res.status}`);
-    err.status = res.status;
-    err.data = data;
-    throw err;
+}
+
+/** Catches render crashes so one bad frame does not kill the whole app. */
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
   }
-  return data;
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error) {
+    console.warn('[WithYou] render error', error?.message || error);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#0B0810', padding: 24, justifyContent: 'center' }}>
+          <Text style={{ color: '#F472B6', fontSize: 22, fontWeight: '900', marginBottom: 8 }}>
+            WithYou
+          </Text>
+          <Text style={{ color: '#F8FAFC', fontSize: 16, fontWeight: '700', marginBottom: 8 }}>
+            Something went wrong
+          </Text>
+          <Text style={{ color: '#A8B0C0', lineHeight: 20, marginBottom: 20 }}>
+            {String(this.state.error?.message || this.state.error)}
+          </Text>
+          <SoftPress
+            onPress={() => this.setState({ error: null })}
+            style={{
+              backgroundColor: '#F472B6',
+              paddingVertical: 14,
+              borderRadius: 14,
+              alignItems: 'center',
+            }}
+          >
+            <Text style={{ color: '#1A0A12', fontWeight: '800' }}>Try again</Text>
+          </SoftPress>
+        </SafeAreaView>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function fmtDist(m) {
@@ -248,7 +327,7 @@ async function fetchWeather(lat, lng) {
 }
 
 // --- App --------------------------------------------------------------------
-export default function App() {
+function WithYouApp() {
   const [boot, setBoot] = useState(true);
   const [token, setToken] = useState(null);
   const [name, setName] = useState('');
@@ -274,10 +353,19 @@ export default function App() {
   const weatherCache = useRef({ at: 0, data: null, key: '' });
   const mapFittedRef = useRef(false);
   const initialMapRegion = useRef(DEFAULT_REGION);
+  const hbInFlightRef = useRef(false);
+  const mountedRef = useRef(true);
   tokenRef.current = token;
   moodRef.current = mood;
   statusRef.current = statusText;
   activityRef.current = activity;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const partner = pair?.partner;
   const me = pair?.me;
@@ -293,30 +381,44 @@ export default function App() {
 
   // Boot session
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
+        const storeOpts =
+          Platform.OS === 'ios' && SecureStore.AFTER_FIRST_UNLOCK != null
+            ? { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK }
+            : undefined;
         const [t, n] = await Promise.all([
-          SecureStore.getItemAsync(TOKEN_KEY),
-          SecureStore.getItemAsync(NAME_KEY),
+          SecureStore.getItemAsync(TOKEN_KEY, storeOpts),
+          SecureStore.getItemAsync(NAME_KEY, storeOpts),
         ]);
+        if (cancelled) return;
         if (n) setName(n);
         if (t) {
           setToken(t);
           try {
             const data = await api('/me', { token: t });
+            if (cancelled) return;
             applyPair(data, { force: true });
             if (data?.me?.mood) setMood(data.me.mood);
             if (data?.me?.status_text) setStatusText(data.me.status_text);
             if (data?.me?.activity) setActivity(data.me.activity);
           } catch {
-            await SecureStore.deleteItemAsync(TOKEN_KEY);
-            setToken(null);
+            try {
+              await SecureStore.deleteItemAsync(TOKEN_KEY);
+            } catch {
+              /* ignore */
+            }
+            if (!cancelled) setToken(null);
           }
         }
       } finally {
-        setBoot(false);
+        if (!cancelled) setBoot(false);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [applyPair]);
 
   // Push notifications — never at module load (crashes some Android builds)
@@ -442,7 +544,6 @@ export default function App() {
         const loc = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Balanced,
           maximumAge: 15000,
-          mayShowUserSettingsDialog: false,
         });
         body.lat = loc.coords.latitude;
         body.lng = loc.coords.longitude;
@@ -502,18 +603,30 @@ export default function App() {
   const heartbeat = useCallback(
     async ({ quiet = true } = {}) => {
       const t = tokenRef.current;
-      if (!t) return;
-      if (!quiet) setSyncing(true);
+      if (!t || !mountedRef.current) return;
+      // Skip overlapping background beats (keeps UI smooth)
+      if (quiet && hbInFlightRef.current) return;
+      hbInFlightRef.current = true;
+      if (!quiet && mountedRef.current) setSyncing(true);
       try {
+        // Background only: wait for animations so scroll/UI stays smooth
+        if (quiet) {
+          await new Promise((resolve) => {
+            InteractionManager.runAfterInteractions(() => resolve());
+          });
+        }
+        if (!mountedRef.current) return;
         const body = await collectTelemetry();
+        if (!mountedRef.current) return;
         const data = await api('/heartbeat', { method: 'POST', token: t, body });
-        if (data?.ok) applyPair(data);
-        setErr('');
+        if (data?.ok && mountedRef.current) applyPair(data);
+        if (mountedRef.current) setErr('');
       } catch (e) {
         // Quiet background errors — only show on manual sync
-        if (!quiet) setErr(e.message || 'Sync failed');
+        if (!quiet && mountedRef.current) setErr(e.message || 'Sync failed');
       } finally {
-        if (!quiet) setSyncing(false);
+        hbInFlightRef.current = false;
+        if (!quiet && mountedRef.current) setSyncing(false);
       }
     },
     [collectTelemetry, applyPair]
@@ -584,8 +697,12 @@ export default function App() {
       if (!data?.token || !data?.invite_code) {
         throw new Error('Server did not return an invite code. Is the API online?');
       }
-      await SecureStore.setItemAsync(TOKEN_KEY, data.token);
-      await SecureStore.setItemAsync(NAME_KEY, n);
+      const storeOpts =
+        Platform.OS === 'ios' && SecureStore.AFTER_FIRST_UNLOCK != null
+          ? { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK }
+          : undefined;
+      await SecureStore.setItemAsync(TOKEN_KEY, data.token, storeOpts);
+      await SecureStore.setItemAsync(NAME_KEY, n, storeOpts);
       setToken(data.token);
       setCreatedInvite(data.invite_code || '');
       applyPair(
@@ -649,8 +766,12 @@ export default function App() {
       if (!data?.token) {
         throw new Error('Join failed — no session from server');
       }
-      await SecureStore.setItemAsync(TOKEN_KEY, data.token);
-      await SecureStore.setItemAsync(NAME_KEY, n);
+      const storeOpts =
+        Platform.OS === 'ios' && SecureStore.AFTER_FIRST_UNLOCK != null
+          ? { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK }
+          : undefined;
+      await SecureStore.setItemAsync(TOKEN_KEY, data.token, storeOpts);
+      await SecureStore.setItemAsync(NAME_KEY, n, storeOpts);
       setToken(data.token);
       applyPair(data, { force: true });
     } catch (e) {
@@ -1083,8 +1204,12 @@ export default function App() {
           ]}
         />
 
-        {tab === 'live' ? (
-          <View style={styles.tabPad}>
+        {/* Keep Live tab mounted so MapView is not destroyed (smooth + fewer Android crashes) */}
+        <View
+          style={[styles.tabPad, tab !== 'live' && styles.tabHidden]}
+          pointerEvents={tab === 'live' ? 'auto' : 'none'}
+          collapsable={false}
+        >
             <View style={styles.mapWrap}>
               <MapView
                 ref={mapRef}
@@ -1165,8 +1290,7 @@ export default function App() {
                 <Metric label="Notes" value={stats?.love_notes_total ?? 0} icon="✉️" />
               </View>
             </Card>
-          </View>
-        ) : null}
+        </View>
 
         {tab === 'intel' ? (
           <View style={styles.tabPad}>
@@ -1311,7 +1435,7 @@ export default function App() {
   );
 }
 
-function PersonHero({ person, title, empty, tone = 'pink' }) {
+const PersonHero = memo(function PersonHero({ person, title, empty, tone = 'pink' }) {
   if (!person) {
     return (
       <Card>
@@ -1370,9 +1494,9 @@ function PersonHero({ person, title, empty, tone = 'pink' }) {
       </View>
     </Card>
   );
-}
+});
 
-function PersonIntel({ person, title, empty, tone = 'pink' }) {
+const PersonIntel = memo(function PersonIntel({ person, title, empty, tone = 'pink' }) {
   if (!person) {
     return (
       <Card>
@@ -1494,6 +1618,14 @@ function PersonIntel({ person, title, empty, tone = 'pink' }) {
       </View>
     </Card>
   );
+});
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <WithYouApp />
+    </ErrorBoundary>
+  );
 }
 
 const styles = StyleSheet.create({
@@ -1522,6 +1654,16 @@ const styles = StyleSheet.create({
   pad: { padding: 20, paddingTop: 28, paddingBottom: 48 },
   padBottom: { paddingBottom: 48 },
   tabPad: { paddingHorizontal: 16 },
+  tabHidden: {
+    // Keep map mounted off-screen without layout thrash
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    opacity: 0,
+    zIndex: -1,
+    height: 1,
+    overflow: 'hidden',
+  },
   mx: { marginHorizontal: 16 },
   pairHero: { alignItems: 'center', marginBottom: 28, marginTop: 12 },
   logo: {
