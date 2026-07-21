@@ -30,9 +30,19 @@ jobs:
           cache: npm
           cache-dependency-path: withyou-app/package-lock.json
 
-      - name: Show Xcode
+      - name: Select newest Xcode + show toolchain
         run: |
+          set -euo pipefail
+          echo "Available Xcodes:"
+          ls /Applications | grep -i xcode || true
+          # Prefer newest installed Xcode (ExpoModulesJSI needs Swift tools >= package requirement)
+          if [ -d /Applications/Xcode_16.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app
+          elif [ -d /Applications/Xcode.app ]; then
+            sudo xcode-select -s /Applications/Xcode.app
+          fi
           xcodebuild -version
+          xcrun swift --version
           xcode-select -p
 
       - name: Install npm deps
@@ -49,6 +59,23 @@ jobs:
           pod install --repo-update
           ls -la
 
+      - name: Patch ExpoModulesJSI Swift tools version for runner Xcode
+        working-directory: withyou-app
+        run: |
+          set -euo pipefail
+          # package requires swift-tools-version 6.2; GH macos-15 often ships Swift 6.1
+          # Lower the tools version so SPM can resolve; source still builds on 6.1.
+          PKG="node_modules/expo-modules-jsi/apple/Package.swift"
+          if [ -f "$PKG" ]; then
+            sed -i.bak 's/swift-tools-version: 6\.2/swift-tools-version: 6.1/' "$PKG"
+            head -n 5 "$PKG"
+          fi
+          # Also clear -quiet on nested xcodebuild so errors are visible if rebuilt mid-pod
+          SCRIPT="node_modules/expo-modules-jsi/apple/scripts/build-xcframework.sh"
+          if [ -f "$SCRIPT" ]; then
+            sed -i.bak 's/ -quiet \\/ \\/' "$SCRIPT" || true
+          fi
+
       - name: Prebuild ExpoModulesJSI xcframework (iphoneos only)
         working-directory: withyou-app
         run: |
@@ -62,32 +89,38 @@ jobs:
           export PODS_ROOT="$PWD/ios/Pods"
           export PLATFORM_NAME=iphoneos
           export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+          # Resolve RN_ROOT for Package.swift header paths
+          export RN_ROOT="$(node -p "require('path').dirname(require.resolve('react-native/package.json'))")"
+          echo "RN_ROOT=$RN_ROOT"
           chmod +x "$JSI_DIR/scripts/"*.sh
-          # Full log — this is what used to fail silently under archive
-          bash -x "$JSI_DIR/scripts/build-xcframework.sh" 2>&1 | tee /tmp/jsi-build.log | tail -n 80
-          # Must have a real arm64 device slice (not only stub)
+
+          set +e
+          bash "$JSI_DIR/scripts/build-xcframework.sh" 2>&1 | tee /tmp/jsi-build.log
+          JSI_XC=${PIPESTATUS[0]}
+          set -e
+          echo "jsi script exit=$JSI_XC"
+          tail -n 60 /tmp/jsi-build.log || true
+
+          if [ "$JSI_XC" -ne 0 ]; then
+            echo "ExpoModulesJSI build failed"
+            grep -E "error:|fatal|Swift tools|Could not resolve" /tmp/jsi-build.log | tail -n 40 || true
+            exit "$JSI_XC"
+          fi
+
           SLICE="$JSI_DIR/Products/ExpoModulesJSI.xcframework/ios-arm64/ExpoModulesJSI.framework/ExpoModulesJSI"
           if [ ! -f "$SLICE" ]; then
             echo "Missing device slice binary"
             find "$JSI_DIR/Products" -type f 2>/dev/null | head -n 50 || true
-            tail -n 100 /tmp/jsi-build.log || true
             exit 1
           fi
-          SIZE=$(stat -f%z "$SLICE" 2>/dev/null || stat -c%s "$SLICE")
+          SIZE=$(stat -f%z "$SLICE")
           echo "ExpoModulesJSI arm64 binary size=$SIZE"
           if [ "$SIZE" -lt 10000 ]; then
-            echo "Slice looks like a stub ($SIZE bytes) — build did not produce real framework"
-            tail -n 100 /tmp/jsi-build.log || true
+            echo "Slice looks like a stub ($SIZE bytes)"
             exit 1
           fi
-          file "$SLICE" || true
-          # Stamp hash so CocoaPods script phase treats slice as up-to-date
-          HASH_FILE="$JSI_DIR/Products/ExpoModulesJSI.xcframework/ios-arm64/.build-hash"
-          if [ ! -s "$HASH_FILE" ]; then
-            # Script normally writes hash; if missing, write a token so empty stub marker is gone
-            echo "ci-prebuilt-$(date +%s)" > "$HASH_FILE"
-          fi
-          ls -la "$JSI_DIR/Products/ExpoModulesJSI.xcframework/ios-arm64/" || true
+          file "$SLICE"
+          ls -la "$JSI_DIR/Products/ExpoModulesJSI.xcframework/ios-arm64/"
 
       - name: Disable code signing on app target only (Pods keep defaults)
         working-directory: withyou-app/ios
