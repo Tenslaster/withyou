@@ -1,51 +1,16 @@
-# WithYou on iPhone — **no IPA**, no GitHub emails
+# iPhone: use IPA (web/PWA disabled)
 
-GitHub Actions cannot build a free Sideloadly IPA reliably (Xcode / signing failures).  
-That workflow is **disabled**. Use the **web app (PWA)** instead.
+WithYou is **native apps only** (APK + IPA). There is no browser / “Add to Home Screen” web app.
 
-## One-time install (looks like an app)
+## Install on iPhone
 
-1. On the **iPhone**, open **Safari** (not Chrome)
-2. Go to: **https://crew.kingdom.forum/withyou**
-3. Wait for the WithYou screen (name + Create / Join)
-4. Tap the **Share** button (square with arrow)
-5. Scroll and tap **Add to Home Screen**
-6. Tap **Add**
-7. Open the **WithYou** icon on the home screen
+1. Download IPA: https://crew.kingdom.forum/withyou/install/ipa  
+2. Or open the install page: https://crew.kingdom.forum/withyou  
+3. Use **Sideloadly** on Windows with a free Apple ID (USB)  
+4. Trust the developer on iPhone · re-sign about every 7 days  
 
-Allow **Location** when asked (so your partner sees you on the map).
-
-## Partner
-
-Same link → same steps → one creates a pair (gets a code) → the other joins with that code.
+Full steps: [SIDELOADLY_IPA.md](SIDELOADLY_IPA.md)
 
 ## Android
 
-- Prefer the real APK: `dist/WithYou.apk` (or GitHub Actions artifact)
-- Or open the same URL in Chrome → “Install app” / Add to Home screen
-
-## What works in the PWA
-
-| Feature | iPhone Safari / Home Screen |
-|--------|-----------------------------|
-| Create / join pair | Yes |
-| Live map + distance | Yes (while app/tab is open) |
-| Partner battery / mood / last seen | Yes |
-| Your GPS share | Yes (when permission granted) |
-| Your battery % | Often **no** on iOS (browser API blocked) |
-| Background GPS when phone locked | Limited (iOS freezes background tabs) |
-
-For full background tracking you still need a real native app (paid Apple Developer + EAS/IPA). The PWA is the free path that works **today**.
-
-## API must be running
-
-On your PC:
-
-```bat
-cd C:\Users\cedri\OneDrive\Bureau\RADIOS\WithYou\server
-start.bat
-```
-
-Cloudflare tunnel must route `/withyou` → `http://127.0.0.1:9610`.
-
-Health check: `https://crew.kingdom.forum/withyou/health`
+https://crew.kingdom.forum/withyou/install/apk

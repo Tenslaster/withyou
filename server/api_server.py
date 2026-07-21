@@ -6,6 +6,9 @@ WithYou pair API — private couple location / battery / presence.
 Default: http://0.0.0.0:9610
 Cloudflare: path /withyou → http://127.0.0.1:9610  (or hostname)
 
+Clients: **Android APK + iOS IPA only** (no web/PWA app).
+Browser visitors get the install page (APK/IPA download).
+
 Pair model:
   - One of you creates a pair → invite code
   - Partner joins with code → both get device tokens
@@ -30,33 +33,10 @@ HOST = os.environ.get("WITHYOU_HOST", "0.0.0.0")
 PORT = int(os.environ.get("WITHYOU_PORT", "9610") or "9610")
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DATA_FILE = DATA_DIR / "pairs.json"
-WEB_DIR = Path(__file__).resolve().parent / "web"
 DIST_DIR = Path(__file__).resolve().parent.parent / "dist"
 FILE_CHUNK = 64 * 1024
 
-# Static PWA assets (no IPA needed — iPhone: Safari → Share → Add to Home Screen)
-_WEB_MIME = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "application/javascript; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".webmanifest": "application/manifest+json; charset=utf-8",
-    ".json": "application/json; charset=utf-8",
-    ".png": "image/png",
-    ".svg": "image/svg+xml",
-    ".ico": "image/x-icon",
-    ".map": "application/json",
-}
-_WEB_FILES = {
-    "/": "index.html",
-    "/app": "index.html",
-    "/index.html": "index.html",
-    "/app.js": "app.js",
-    "/sw.js": "sw.js",
-    "/manifest.webmanifest": "manifest.webmanifest",
-    "/manifest.json": "manifest.webmanifest",
-    "/icon-192.png": "icon-192.png",
-    "/icon-512.png": "icon-512.png",
-}
+# Web/PWA UI is intentionally disabled — APK + IPA only.
 MAX_HISTORY = 80
 HEARTBEAT_STALE_S = 120  # >2 min without beat → offline
 PLACE_MOVE_M = 80  # re-count "arrived" if moved more than this
@@ -464,58 +444,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         self._get_or_head(body=True)
 
-    def _serve_web(self, path: str, *, under_withyou: bool = False) -> bool:
-        """Serve PWA static files. Returns True if handled."""
-        key = path if path.startswith("/") else f"/{path}"
-        if key != "/" and key.endswith("/"):
-            key = key.rstrip("/") or "/"
-        # Accept: application/json on / → health for probes / mobile app
-        if key in ("/", "/app"):
-            accept = (self.headers.get("Accept") or "").lower()
-            if "application/json" in accept and "text/html" not in accept:
-                return False
-        rel = _WEB_FILES.get(key)
-        if not rel:
-            name = key.lstrip("/")
-            if name and ".." not in name and "/" not in name:
-                candidate = WEB_DIR / name
-                if candidate.is_file():
-                    rel = name
-        if not rel:
-            return False
-        fpath = WEB_DIR / rel
-        if not fpath.is_file():
-            return False
-        try:
-            data = fpath.read_bytes()
-        except OSError:
-            return False
-        # Fix relative assets when public URL is /withyou (no trailing slash)
-        if rel == "index.html" and under_withyou:
-            base = b'<base href="/withyou/">'
-            data = data.replace(b"<head>", b"<head>\n  " + base, 1)
-        ctype = _WEB_MIME.get(fpath.suffix.lower(), "application/octet-stream")
-        if rel == "sw.js":
-            cache = "no-cache"
-        elif fpath.suffix.lower() in (".png", ".svg", ".ico"):
-            cache = "public, max-age=86400"
-        else:
-            cache = "no-cache"
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Cache-Control", cache)
-        if rel == "sw.js":
-            self.send_header(
-                "Service-Worker-Allowed",
-                "/withyou/" if under_withyou else "/",
-            )
-        self.end_headers()
-        self.wfile.write(data)
-        return True
-
     def _send_install_page(self, *, body: bool) -> None:
         apk = DIST_DIR / "WithYou.apk"
         ipa = DIST_DIR / "WithYou.ipa"
@@ -537,42 +465,56 @@ class Handler(BaseHTTPRequestHandler):
 <html lang="en"><head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<meta name="theme-color" content="#0f0a12"/>
-<title>WithYou - Install</title>
+<meta name="theme-color" content="#0b0810"/>
+<meta name="robots" content="noindex"/>
+<title>WithYou — Install</title>
 <style>
-body{{margin:0;min-height:100vh;background:#0f0a12;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+body{{margin:0;min-height:100vh;background:radial-gradient(900px 500px at 50% -10%,#1a1024,#0b0810 55%);
+color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
 display:flex;align-items:center;justify-content:center;padding:20px}}
-.w{{max-width:440px;width:100%}} h1{{color:#f472b6;margin:0 0 6px;font-size:1.75rem}}
-.t{{color:#94a3b8;margin:0 0 18px;line-height:1.45}}
-.c{{background:#1a1220;border:1px solid #2d2438;border-radius:16px;padding:16px;margin-bottom:14px}}
-.c h2{{margin:0 0 6px;font-size:1.05rem}} .m{{color:#64748b;font-size:.85rem;margin:0 0 12px}}
-a.btn{{display:block;text-align:center;background:#f472b6;color:#0f0a12;font-weight:800;text-decoration:none;
-padding:16px;border-radius:12px;font-size:1rem}} a.btn:active{{opacity:.9}}
-a.btn.off,span.off{{display:block;text-align:center;background:#2d2438;color:#64748b;padding:16px;border-radius:12px;font-weight:700}}
-ol{{margin:12px 0 0;padding-left:1.2rem;color:#94a3b8;font-size:.85rem;line-height:1.5}}
+.w{{max-width:440px;width:100%}}
+h1{{color:#f8fafc;margin:0 0 6px;font-size:1.85rem;letter-spacing:-.03em;font-weight:900}}
+.badge{{display:inline-block;background:rgba(244,114,182,.14);color:#f472b6;font-size:.7rem;font-weight:800;
+padding:4px 10px;border-radius:999px;margin-bottom:12px;letter-spacing:.04em;text-transform:uppercase}}
+.t{{color:#a8b0c0;margin:0 0 20px;line-height:1.5}}
+.c{{background:#16121f;border:1px solid rgba(255,255,255,.07);border-radius:18px;padding:18px;margin-bottom:14px;
+box-shadow:0 10px 30px rgba(0,0,0,.25)}}
+.c h2{{margin:0 0 6px;font-size:1.05rem;font-weight:800}} .m{{color:#6b7289;font-size:.85rem;margin:0 0 12px}}
+a.btn{{display:block;text-align:center;background:linear-gradient(135deg,#fb8ec4,#f472b6 50%,#e85a9e);color:#1a0a12;
+font-weight:800;text-decoration:none;padding:16px;border-radius:14px;font-size:1rem;
+box-shadow:0 8px 24px rgba(244,114,182,.28)}} a.btn:active{{opacity:.9}}
+span.off{{display:block;text-align:center;background:#2d2438;color:#64748b;padding:16px;border-radius:14px;font-weight:700}}
+ol{{margin:12px 0 0;padding-left:1.2rem;color:#a8b0c0;font-size:.85rem;line-height:1.55}}
 .warn{{color:#fbbf24;font-size:.8rem;margin-top:10px;line-height:1.4}}
-.l{{text-align:center;margin-top:16px}} .l a{{color:#94a3b8}}
+.foot{{text-align:center;margin-top:18px;color:#4b5163;font-size:.75rem;line-height:1.5}}
 </style></head><body><div class="w">
+<span class="badge">Native apps only · APK + IPA</span>
 <h1>WithYou</h1>
-<p class="t">Private couple app - install the Android APK on your phone.</p>
+<p class="t">Private couple app for two phones. No web app — install Android APK or iPhone IPA.</p>
 <div class="c">
 <h2>Android APK</h2>
 <p class="m">{sz(apk)} · com.withyou.pair</p>
 {"<a class='btn' href='"+apk_href+"' download='WithYou.apk'>Download APK</a>" if apk_ok else "<span class='off'>APK missing on server</span>"}
 <ol>
 <li>Open this page in <b>Chrome</b> on Android</li>
-<li>Tap Download APK (file is ~70 MB - wait for it)</li>
+<li>Tap Download APK (~70 MB — wait for it)</li>
 <li>Allow <b>Install unknown apps</b> for Chrome if asked</li>
-<li>Open the file in Downloads and Install</li>
+<li>Open the file and Install</li>
 </ol>
-<p class="warn">If the download fails: use Wi-Fi, open the link again, or copy:<br>{apk_href}</p>
+<p class="warn">If download fails: use Wi‑Fi and open again:<br>{apk_href}</p>
 </div>
 <div class="c">
 <h2>iPhone IPA</h2>
-<p class="m">{sz(ipa)} · Sideloadly on Windows (not installable from Safari alone)</p>
+<p class="m">{sz(ipa)} · install with Sideloadly + free Apple ID on a PC</p>
 {"<a class='btn' href='"+ipa_href+"' download='WithYou.ipa'>Download IPA</a>" if ipa_ok else "<span class='off'>IPA missing</span>"}
+<ol>
+<li>Download IPA on Windows</li>
+<li>Open in <b>Sideloadly</b> with your free Apple ID</li>
+<li>Connect iPhone by USB · install · Trust developer on phone</li>
+<li>Re-sign about every 7 days (free cert)</li>
+</ol>
 </div>
-<p class="l"><a href="https://crew.kingdom.forum/withyou/">Open web app</a></p>
+<p class="foot">API for the apps only · no browser version</p>
 </div></body></html>"""
         data = html.encode("utf-8")
         self.send_response(200)
@@ -672,8 +614,30 @@ ol{{margin:12px 0 0;padding-left:1.2rem;color:#94a3b8;font-size:.85rem;line-heig
         if under_withyou:
             path = path[len("/withyou") :] or "/"
 
-        # Install page + APK/IPA (mobile-friendly; Range + CORS for phone Chrome)
-        if path in ("/install", "/download", "/downloads"):
+        # Install page + APK/IPA only (no browser/PWA app)
+        if path in (
+            "/",
+            "/app",
+            "/index.html",
+            "/install",
+            "/download",
+            "/downloads",
+        ):
+            accept = (self.headers.get("Accept") or "").lower()
+            # API probes / mobile may request JSON on /
+            if path == "/" and "application/json" in accept and "text/html" not in accept:
+                self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "service": "withyou",
+                        "version": "1.1.1",
+                        "clients": ["apk", "ipa"],
+                        "pwa": False,
+                        "time": _now(),
+                    },
+                )
+                return
             self._send_install_page(body=body)
             return
         if path in ("/install/apk", "/download/apk", "/downloads/apk", "/WithYou.apk"):
@@ -690,14 +654,17 @@ ol{{margin:12px 0 0;padding-left:1.2rem;color:#94a3b8;font-size:.85rem;line-heig
             self._send_dist_file(name, "application/octet-stream", body=body, download_as="WithYou.ipa")
             return
 
-        # PWA (browser) — iPhone: Safari → Share → Add to Home Screen
-        if path not in ("/health", "/me", "/partner", "/history"):
-            if body and self._serve_web(path, under_withyou=under_withyou):
-                return
-            if not body:
-                # HEAD for static web: try serve then ignore body
-                if self._serve_web(path, under_withyou=under_withyou):
-                    return
+        # Old PWA assets → install page (no web app)
+        if path in (
+            "/app.js",
+            "/sw.js",
+            "/manifest.webmanifest",
+            "/manifest.json",
+            "/icon-192.png",
+            "/icon-512.png",
+        ):
+            self._send_install_page(body=body)
+            return
 
         if path in ("/health",):
             self._json(
@@ -705,28 +672,13 @@ ol{{margin:12px 0 0;padding-left:1.2rem;color:#94a3b8;font-size:.85rem;line-heig
                 {
                     "ok": True,
                     "service": "withyou",
-                    "version": "1.0.0",
-                    "pwa": True,
+                    "version": "1.1.1",
+                    "clients": ["apk", "ipa"],
+                    "pwa": False,
                     "time": _now(),
                 },
             )
             return
-
-        # JSON health for API clients that still hit /
-        if path == "/":
-            accept = (self.headers.get("Accept") or "").lower()
-            if "application/json" in accept:
-                self._json(
-                    200,
-                    {
-                        "ok": True,
-                        "service": "withyou",
-                        "version": "1.0.0",
-                        "pwa": True,
-                        "time": _now(),
-                    },
-                )
-                return
 
         if path == "/me":
             auth = self._auth_device()

@@ -21,20 +21,19 @@ Separate from **Commander PRO**. Only **two devices** can pair. Data stays on **
 | Piece | Status |
 |--------|--------|
 | API local `:9610` | OK when `server\start.bat` is running |
-| Public `https://crew.kingdom.forum/withyou` | **PWA + API** (open in Safari on iPhone) |
+| Public `https://crew.kingdom.forum/withyou` | **Install page + API** (no web app) |
 | Pair create / join / heartbeat | Smoke-tested |
 | Android APK | `dist/WithYou.apk` + GitHub Actions `android-apk.yml` |
-| iOS IPA (GitHub) | **Disabled** — kept failing / email spam |
-| **iPhone now** | **PWA**: Safari → Share → Add to Home Screen (see `docs/IPHONE_PWA.md`) |
-| EAS iOS IPA | Needs paid Apple Dev + interactive credentials |
+| iOS IPA | Sideloadly IPA via GitHub Actions `ios-ipa.yml` |
+| Clients | **APK + IPA only** (web/PWA disabled) |
 
-### iPhone (recommended — free, no IPA)
+### Install (APK / IPA only)
 
 1. Start the API (`server\start.bat`) + Cloudflare `/withyou`
-2. On iPhone Safari open: **https://crew.kingdom.forum/withyou**
-3. Share → **Add to Home Screen**
+2. Open **https://crew.kingdom.forum/withyou** → download APK or IPA
+3. Android: install APK · iPhone: Sideloadly + free Apple ID
 
-Full guide: [docs/IPHONE_PWA.md](docs/IPHONE_PWA.md)
+See [docs/DOWNLOAD.md](docs/DOWNLOAD.md) and [docs/SIDELOADLY_IPA.md](docs/SIDELOADLY_IPA.md).
 
 ## Run API (Windows)
 
