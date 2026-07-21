@@ -330,13 +330,8 @@
   }
 
   async function createPair() {
-    const name = $("name").value.trim();
+    const name = $("name").value.trim() || "Me";
     const emoji = $("emoji").value.trim() || "💙";
-    if (!name) {
-      $("pair-err").textContent = "Enter your name first.";
-      show($("pair-err"));
-      return;
-    }
     $("btn-create").disabled = true;
     hide($("pair-err"));
     try {
@@ -372,15 +367,11 @@
   }
 
   async function joinPair() {
-    const name = $("name").value.trim();
+    // Name optional — only invite code is required
+    const name = $("name").value.trim() || "Partner";
     const invite = cleanInvite($("invite").value);
     $("invite").value = invite;
     const emoji = $("emoji").value.trim() || "💗";
-    if (!name) {
-      $("pair-err").textContent = "Type your name first (e.g. Alex).";
-      show($("pair-err"));
-      return;
-    }
     if (!invite || invite.length < 4) {
       $("pair-err").textContent =
         "Type the 6-character invite code from your partner (Create pair).";

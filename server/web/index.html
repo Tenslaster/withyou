@@ -115,28 +115,27 @@
     <p class="tag">Private couple radar — location, battery, distance &amp; last seen. Only the two of you.</p>
 
     <div id="install-tip" class="install hidden">
-      <h3>📱 Install on iPhone (no IPA)</h3>
+      <h3>📱 Real app (IPA / APK)</h3>
       <ol>
-        <li>Open this page in <strong>Safari</strong></li>
-        <li>Tap the <strong>Share</strong> button</li>
-        <li><strong>Add to Home Screen</strong></li>
-        <li>Open the WithYou icon — works like an app</li>
+        <li><a href="https://crew.kingdom.forum/withyou/install" style="color:#f472b6;font-weight:800">Download APK or IPA</a></li>
+        <li>iPhone: install IPA with <strong>Sideloadly</strong> + free Apple ID</li>
+        <li>Or Safari → Share → <strong>Add to Home Screen</strong> (web)</li>
       </ol>
     </div>
 
-    <label class="label" for="name">Your name</label>
-    <input id="name" placeholder="e.g. Alex" autocomplete="name" />
-
-    <label class="label" for="emoji">Emoji</label>
-    <input id="emoji" value="💙" maxlength="4" />
-
-    <button type="button" class="btn btn-primary" id="btn-create">Create pair (get invite code)</button>
-    <div class="divider">or join partner</div>
-
-    <label class="label" for="invite">Invite code</label>
+    <label class="label" for="invite">Invite code (to join)</label>
     <input id="invite" placeholder="6-character code" autocomplete="off" style="text-transform:uppercase" />
 
     <button type="button" class="btn btn-ghost" id="btn-join">Join pair</button>
+    <div class="divider">or create a new pair</div>
+
+    <label class="label" for="name">Your name (optional)</label>
+    <input id="name" placeholder="e.g. Alex" autocomplete="name" />
+
+    <label class="label" for="emoji">Emoji (optional)</label>
+    <input id="emoji" value="💙" maxlength="4" />
+
+    <button type="button" class="btn btn-primary" id="btn-create">Create pair (get invite code)</button>
     <p id="pair-err" class="err hidden"></p>
     <p class="hint" id="api-hint"></p>
   </div>

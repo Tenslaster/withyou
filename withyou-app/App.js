@@ -300,7 +300,7 @@ export default function App() {
       const code = data.invite_code;
       Alert.alert(
         'Invite code ready',
-        `Your code is ${code}\n\nShare it with your partner. They enter their name + this code and tap Join pair.`,
+        `Your code is ${code}\n\nShare it with your partner. They only need this code to Join pair.`,
         [
           { text: 'OK' },
           {
@@ -321,12 +321,9 @@ export default function App() {
   };
 
   const joinPair = async () => {
-    const n = (name || '').trim();
+    // Name is optional — only the invite code is required to join
+    const n = (name || '').trim() || 'Partner';
     const code = cleanInviteCode(inviteInput);
-    if (!n) {
-      Alert.alert('Your name', 'Type your name in the first field (e.g. Alex), then Join.');
-      return;
-    }
     if (!code || code.length < 4) {
       Alert.alert(
         'Invite code',
@@ -334,6 +331,7 @@ export default function App() {
       );
       return;
     }
+    if (!(name || '').trim()) setName(n);
     setInviteInput(code);
     setBusy(true);
     setErr('');
@@ -445,10 +443,33 @@ export default function App() {
           >
             <Text style={styles.logo}>WithYou</Text>
             <Text style={styles.tagline}>
-              One of you creates a pair and gets a code. The other enters that
-              code to join. You both need a name.
+              One of you creates a pair and gets a code. The other only needs
+              that code to join.
             </Text>
-            <Text style={styles.label}>1. Your name (required for both)</Text>
+            <Text style={styles.label}>Invite code (to join)</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. 30A070"
+              placeholderTextColor="#64748b"
+              autoCapitalize="characters"
+              autoCorrect={false}
+              autoComplete="off"
+              textContentType="oneTimeCode"
+              value={inviteInput}
+              onChangeText={(t) => setInviteInput(cleanInviteCode(t))}
+              maxLength={8}
+            />
+            <Pressable style={[styles.btn, styles.btnGhost]} onPress={joinPair} disabled={busy}>
+              {busy ? (
+                <ActivityIndicator color="#f472b6" />
+              ) : (
+                <Text style={styles.btnGhostText}>Join pair</Text>
+              )}
+            </Pressable>
+            <View style={styles.divider}>
+              <Text style={styles.dividerText}>or create a new pair</Text>
+            </View>
+            <Text style={styles.label}>Your name (optional)</Text>
             <TextInput
               style={styles.input}
               placeholder="e.g. Alex"
@@ -456,7 +477,7 @@ export default function App() {
               value={name}
               onChangeText={setName}
               autoCorrect={false}
-              returnKeyType="next"
+              returnKeyType="done"
             />
             <Text style={styles.label}>Emoji (optional)</Text>
             <TextInput
@@ -472,30 +493,11 @@ export default function App() {
                 <Text style={styles.btnPrimaryText}>Create pair → get code</Text>
               )}
             </Pressable>
-            <View style={styles.divider}>
-              <Text style={styles.dividerText}>partner joins with code</Text>
-            </View>
-            <Text style={styles.label}>2. Invite code from partner</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. 30A070"
-              placeholderTextColor="#64748b"
-              autoCapitalize="characters"
-              autoCorrect={false}
-              autoComplete="off"
-              textContentType="oneTimeCode"
-              value={inviteInput}
-              onChangeText={(t) => setInviteInput(cleanInviteCode(t))}
-              maxLength={8}
-            />
-            <Pressable style={[styles.btn, styles.btnGhost]} onPress={joinPair} disabled={busy}>
-              <Text style={styles.btnGhostText}>Join pair</Text>
-            </Pressable>
             {!!err && <Text style={styles.error}>{err}</Text>}
             <Text style={styles.hint}>
               How to pair:{'\n'}
-              • Phone A: type name → Create pair → share the 6-char code{'\n'}
-              • Phone B: type name → paste code → Join pair{'\n'}
+              • Phone A: Create pair → share the 6-char code{'\n'}
+              • Phone B: paste code → Join pair (name optional){'\n'}
               {'\n'}
               API: {API_URL}
             </Text>
