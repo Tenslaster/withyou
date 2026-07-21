@@ -1,6 +1,6 @@
 {
   "name": "withyou-app",
-  "version": "1.1.4",
+  "version": "1.2.0",
   "main": "index.js",
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
@@ -22,7 +22,8 @@
     "expo-task-manager": "~57.0.5",
     "react": "19.2.3",
     "react-native": "0.86.0",
-    "react-native-maps": "1.27.2"
+    "react-native-maps": "1.27.2",
+    "react-native-webview": "13.16.1"
   },
   "scripts": {
     "start": "expo start",

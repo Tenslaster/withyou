@@ -38,6 +38,7 @@ import * as Cellular from 'expo-cellular';
 import * as Localization from 'expo-localization';
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
+import { WebView } from 'react-native-webview';
 import {
   T,
   SoftPress,
@@ -54,15 +55,22 @@ import {
   Input,
   hapticSuccess,
 } from './theme';
+import { buildMapHtml } from './mapHtml';
 
 /**
- * Native maps crash many Android builds (Google Maps SDK / no API key).
- * iOS uses Apple Maps via react-native-maps — load it only on iOS.
+ * Maps strategy (pro + crash-safe):
+ * - iOS: native MapView (Apple Maps)
+ * - Android without Google key: in-app WebView map (dark OSM/Carto) — always works
+ * - Android with Google key: native Google Maps (PROVIDER_GOOGLE)
  */
-const USE_NATIVE_MAP = Platform.OS === 'ios';
+const USE_NATIVE_GOOGLE =
+  Platform.OS === 'android' &&
+  Boolean(Constants.expoConfig?.extra?.useNativeGoogleMaps);
+const USE_NATIVE_MAP = Platform.OS === 'ios' || USE_NATIVE_GOOGLE;
 let MapView = null;
 let Marker = null;
 let Polyline = null;
+let PROVIDER_GOOGLE = null;
 if (USE_NATIVE_MAP) {
   try {
     // eslint-disable-next-line global-require
@@ -70,6 +78,7 @@ if (USE_NATIVE_MAP) {
     MapView = maps.default;
     Marker = maps.Marker;
     Polyline = maps.Polyline;
+    PROVIDER_GOOGLE = maps.PROVIDER_GOOGLE;
   } catch {
     MapView = null;
   }
@@ -276,10 +285,64 @@ class ErrorBoundary extends Component {
   }
 }
 
+function safeNum(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function fmtDist(m) {
-  if (m == null || Number.isNaN(m)) return '—';
-  if (m < 1000) return `${Math.round(m)} m`;
-  return `${(m / 1000).toFixed(m < 10000 ? 2 : 1)} km`;
+  const n = safeNum(m);
+  if (n == null) return '—';
+  if (Math.abs(n) < 1000) return `${Math.round(n)} m`;
+  return `${(n / 1000).toFixed(n < 10000 ? 2 : 1)} km`;
+}
+
+function fmtSpeed(person) {
+  if (!person) return '—';
+  const kmh = safeNum(person.speed_kmh);
+  if (kmh != null) return `${kmh % 1 === 0 ? kmh : kmh.toFixed(1)} km/h`;
+  const mps = safeNum(person.speed_mps);
+  if (mps != null && mps >= 0) return `${(mps * 3.6).toFixed(0)} km/h`;
+  return '—';
+}
+
+function fmtWeather(person) {
+  if (!person) return '—';
+  const t = safeNum(person.weather_temp_c);
+  if (t == null) return '—';
+  const label = (person.weather_label || '').trim();
+  return label ? `${t}° · ${label}` : `${t}°`;
+}
+
+function fmtPlace(person) {
+  if (!person) return '—';
+  if (person.place_name) return String(person.place_name);
+  const la = safeNum(person.lat);
+  const ln = safeNum(person.lng);
+  if (la != null && ln != null) return `${la.toFixed(4)}, ${ln.toFixed(4)}`;
+  return 'No GPS';
+}
+
+function fmtCity(person) {
+  if (!person) return '—';
+  const parts = [person.place_city, person.place_region].filter(Boolean);
+  return parts.length ? parts.join(', ') : '—';
+}
+
+function fmtNetwork(person) {
+  if (!person) return '—';
+  if (person.is_wifi === true) return 'Wi‑Fi';
+  if (person.is_internet === false) return 'Offline';
+  if (person.network) return String(person.network);
+  if (person.cellular_gen) return String(person.cellular_gen);
+  return '—';
+}
+
+function displayVal(v, fallback = '—') {
+  if (v == null || v === '') return fallback;
+  const s = String(v).trim();
+  return s || fallback;
 }
 
 function fmtAgo(ts) {
@@ -1279,7 +1342,15 @@ function WithYouApp() {
             <Card>
               <SectionLabel>Today</SectionLabel>
               <View style={styles.grid}>
-                <Metric label="Days" value={pair?.days_together ?? '—'} icon="📅" />
+                <Metric
+                  label="Days"
+                  value={
+                    safeNum(pair?.days_together) != null
+                      ? String(Math.round(safeNum(pair.days_together)))
+                      : '—'
+                  }
+                  icon="📅"
+                />
                 <Metric label="Apart now" value={fmtDist(pair?.distance_m)} icon="📍" />
                 <Metric
                   label="Max apart"
@@ -1291,8 +1362,26 @@ function WithYouApp() {
                   value={fmtDist(stats?.min_distance_m_today)}
                   icon="💞"
                 />
-                <Metric label="Pings" value={stats?.care_pings_total ?? 0} icon="💗" />
-                <Metric label="Notes" value={stats?.love_notes_total ?? 0} icon="✉️" />
+                <Metric
+                  label="Pings"
+                  value={String(Math.max(0, Math.round(safeNum(stats?.care_pings_total) || 0)))}
+                  icon="💗"
+                />
+                <Metric
+                  label="Notes"
+                  value={String(Math.max(0, Math.round(safeNum(stats?.love_notes_total) || 0)))}
+                  icon="✉️"
+                />
+                <Metric
+                  label="Partner km"
+                  value={fmtDist(partner?.traveled_m_today)}
+                  icon="🚶"
+                />
+                <Metric
+                  label="Both online"
+                  value={stats?.both_online ? 'Yes' : 'No'}
+                  icon="🟢"
+                />
               </View>
             </Card>
           </View>
@@ -1441,36 +1530,61 @@ function WithYouApp() {
   );
 }
 
-/** Location UI — Android never mounts native MapView (crash fix). */
+/** Location + in-app map (native iOS / Google if keyed / WebView OSM on Android). */
 function LocationPanel({ me, partner, distanceM, trailCoords, mapRef, initialRegion }) {
-  const locationFallback = (
-    <Card accent="blue" style={{ marginBottom: 12 }}>
-      <SectionLabel>Location</SectionLabel>
-      <Text style={styles.heroDist}>{fmtDist(distanceM)}</Text>
-      <Text style={styles.heroSub}>apart right now</Text>
-      <View style={[styles.grid, { marginTop: 8 }]}>
-        <Metric
-          label="Partner"
-          value={
-            partner?.place_name ||
-            (partner?.lat != null
-              ? `${Number(partner.lat).toFixed(3)}, ${Number(partner.lng).toFixed(3)}`
-              : 'No GPS')
-          }
-        />
-        <Metric
-          label="You"
-          value={
-            me?.place_name ||
-            (me?.lat != null
-              ? `${Number(me.lat).toFixed(3)}, ${Number(me.lng).toFixed(3)}`
-              : 'No GPS')
-          }
-        />
+  const distLabel = fmtDist(distanceM);
+  const mapHtml = useMemo(
+    () =>
+      buildMapHtml({
+        me: {
+          lat: safeNum(me?.lat),
+          lng: safeNum(me?.lng),
+          name: me?.display_name || 'You',
+        },
+        partner: {
+          lat: safeNum(partner?.lat),
+          lng: safeNum(partner?.lng),
+          name: partner?.display_name || 'Partner',
+        },
+        trail: (trailCoords || []).map((c) => ({
+          lat: c.latitude,
+          lng: c.longitude,
+        })),
+        distanceLabel: distLabel,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      me?.lat,
+      me?.lng,
+      me?.display_name,
+      partner?.lat,
+      partner?.lng,
+      partner?.display_name,
+      distLabel,
+      trailCoords?.length,
+    ]
+  );
+
+  const statsCard = (
+    <Card accent="blue" style={{ marginBottom: 12, marginTop: 0 }}>
+      <View style={styles.grid}>
+        <Metric label="Distance" value={distLabel} icon="📍" />
+        <Metric label="Partner" value={fmtPlace(partner)} />
+        <Metric label="You" value={fmtPlace(me)} />
         <Metric label="Motion" value={motionLabel(partner?.motion)} />
+        <Metric label="Partner batt" value={
+          safeNum(partner?.battery) != null
+            ? `${Math.round(safeNum(partner.battery))}%${partner?.charging ? ' ⚡' : ''}`
+            : '—'
+        } />
+        <Metric label="Your batt" value={
+          safeNum(me?.battery) != null
+            ? `${Math.round(safeNum(me.battery))}%${me?.charging ? ' ⚡' : ''}`
+            : '—'
+        } />
       </View>
-      <View style={[styles.rowWrap, { marginTop: 12 }]}>
-        {partner?.lat != null ? (
+      <View style={[styles.rowWrap, { marginTop: 10 }]}>
+        {safeNum(partner?.lat) != null ? (
           <SoftPress
             style={styles.chip}
             onPress={() =>
@@ -1480,7 +1594,7 @@ function LocationPanel({ me, partner, distanceM, trailCoords, mapRef, initialReg
             <Text style={styles.chipText}>Open partner in Maps</Text>
           </SoftPress>
         ) : null}
-        {me?.lat != null ? (
+        {safeNum(me?.lat) != null ? (
           <SoftPress
             style={styles.chip}
             onPress={() => openInMaps(me.lat, me.lng, me.display_name || 'Me')}
@@ -1489,75 +1603,119 @@ function LocationPanel({ me, partner, distanceM, trailCoords, mapRef, initialReg
           </SoftPress>
         ) : null}
       </View>
-      {Platform.OS === 'android' ? (
-        <Text style={[styles.metaLine, { marginTop: 10 }]}>
-          Built-in map is off on Android for stability. Use the buttons to open Google Maps.
-        </Text>
-      ) : null}
     </Card>
   );
 
-  // Android / missing native maps: never create MapView
-  if (!USE_NATIVE_MAP || !MapView) {
-    return locationFallback;
+  // Prefer native map when available (iOS Apple / Android Google with key)
+  if (USE_NATIVE_MAP && MapView) {
+    return (
+      <View>
+        <MapBoundary fallback={<WebMap html={mapHtml} />}>
+          <View style={styles.mapWrap}>
+            <MapView
+              ref={mapRef}
+              style={styles.map}
+              provider={
+                Platform.OS === 'android' && PROVIDER_GOOGLE
+                  ? PROVIDER_GOOGLE
+                  : undefined
+              }
+              initialRegion={initialRegion}
+              rotateEnabled={false}
+              pitchEnabled={false}
+              toolbarEnabled={false}
+              moveOnMarkerPress={false}
+              loadingEnabled={false}
+            >
+              {Polyline && trailCoords.length > 1 ? (
+                <Polyline
+                  coordinates={trailCoords}
+                  strokeColor="#F472B6AA"
+                  strokeWidth={3}
+                />
+              ) : null}
+              {Marker && safeNum(me?.lat) != null && safeNum(me?.lng) != null ? (
+                <Marker
+                  coordinate={{
+                    latitude: Number(me.lat),
+                    longitude: Number(me.lng),
+                  }}
+                  title={me.display_name || 'You'}
+                  description={me.place_name || 'You'}
+                  pinColor="#38bdf8"
+                  tracksViewChanges={false}
+                />
+              ) : null}
+              {Marker &&
+              safeNum(partner?.lat) != null &&
+              safeNum(partner?.lng) != null ? (
+                <Marker
+                  coordinate={{
+                    latitude: Number(partner.lat),
+                    longitude: Number(partner.lng),
+                  }}
+                  title={partner.display_name || 'Partner'}
+                  description={
+                    partner.place_name ||
+                    (partner.online ? 'Online' : fmtAgo(partner.last_seen))
+                  }
+                  pinColor="#f472b6"
+                  tracksViewChanges={false}
+                />
+              ) : null}
+            </MapView>
+            <View style={styles.mapOverlay}>
+              <Pill
+                label={
+                  Platform.OS === 'android'
+                    ? 'Google Maps'
+                    : partner?.motion
+                      ? motionLabel(partner.motion)
+                      : 'Map'
+                }
+                tone="pink"
+              />
+            </View>
+          </View>
+        </MapBoundary>
+        {statsCard}
+      </View>
+    );
   }
 
+  // Android default: professional in-app map via WebView (no Google key, no crash)
   return (
-    <MapBoundary fallback={locationFallback}>
-      <View style={styles.mapWrap}>
-        <MapView
-          ref={mapRef}
-          style={styles.map}
-          initialRegion={initialRegion}
-          rotateEnabled={false}
-          pitchEnabled={false}
-          toolbarEnabled={false}
-          moveOnMarkerPress={false}
-          loadingEnabled={false}
-        >
-          {Polyline && trailCoords.length > 1 ? (
-            <Polyline
-              coordinates={trailCoords}
-              strokeColor="#F472B6AA"
-              strokeWidth={3}
-            />
-          ) : null}
-          {Marker && me?.lat != null && me?.lng != null ? (
-            <Marker
-              coordinate={{
-                latitude: Number(me.lat),
-                longitude: Number(me.lng),
-              }}
-              title={me.display_name || 'You'}
-              description={me.place_name || 'You'}
-              pinColor="#38bdf8"
-              tracksViewChanges={false}
-            />
-          ) : null}
-          {Marker && partner?.lat != null && partner?.lng != null ? (
-            <Marker
-              coordinate={{
-                latitude: Number(partner.lat),
-                longitude: Number(partner.lng),
-              }}
-              title={partner.display_name || 'Partner'}
-              description={
-                partner.place_name ||
-                (partner.online ? 'Online' : fmtAgo(partner.last_seen))
-              }
-              pinColor="#f472b6"
-              tracksViewChanges={false}
-            />
-          ) : null}
-        </MapView>
-        <View style={styles.mapOverlay}>
-          <Pill
-            label={partner?.motion ? motionLabel(partner.motion) : 'Map'}
-            tone="pink"
-          />
-        </View>
+    <View>
+      <WebMap html={mapHtml} />
+      {statsCard}
+    </View>
+  );
+}
+
+function WebMap({ html }) {
+  return (
+    <View style={styles.mapWrap}>
+      <WebView
+        originWhitelist={['*']}
+        source={{ html }}
+        style={styles.map}
+        javaScriptEnabled
+        domStorageEnabled
+        mixedContentMode="always"
+        setSupportMultipleWindows={false}
+        androidLayerType="hardware"
+        startInLoadingState
+        renderLoading={() => (
+          <View style={styles.mapLoading}>
+            <ActivityIndicator color={T.pink} />
+            <Text style={styles.mapLoadingText}>Loading map…</Text>
+          </View>
+        )}
+      />
+      <View style={styles.mapOverlay}>
+        <Pill label="Live map" tone="pink" />
       </View>
-    </MapBoundary>
+    </View>
   );
 }
 
@@ -1604,18 +1762,14 @@ const PersonHero = memo(function PersonHero({ person, title, empty, tone = 'pink
         lowPower={person.low_power}
       />
       <View style={[styles.grid, { marginTop: 4 }]}>
-        <Metric
-          label="Place"
-          value={person.place_name || (person.lat != null ? 'GPS' : '—')}
-        />
+        <Metric label="Place" value={fmtPlace(person)} />
         <Metric label="Motion" value={motionLabel(person.motion)} />
+        <Metric label="Weather" value={fmtWeather(person)} />
+        <Metric label="Speed" value={fmtSpeed(person)} />
+        <Metric label="Network" value={fmtNetwork(person)} />
         <Metric
-          label="Weather"
-          value={
-            person.weather_temp_c != null
-              ? `${person.weather_temp_c}°`
-              : '—'
-          }
+          label="Time here"
+          value={fmtDuration(safeNum(person.time_at_place_s))}
         />
       </View>
     </Card>
@@ -1631,11 +1785,11 @@ const PersonIntel = memo(function PersonIntel({ person, title, empty, tone = 'pi
       </Card>
     );
   }
-  const net =
-    person.is_wifi === true
-      ? 'Wi‑Fi'
-      : person.network ||
-        (person.is_internet === false ? 'Offline' : person.cellular_gen || '—');
+  const batt = safeNum(person.battery);
+  const alt = safeNum(person.altitude_m);
+  const acc = safeNum(person.accuracy_m);
+  const heading = safeNum(person.heading);
+  const hour = safeNum(person.local_hour);
 
   return (
     <Card accent={tone === 'blue' ? 'blue' : undefined}>
@@ -1645,48 +1799,46 @@ const PersonIntel = memo(function PersonIntel({ person, title, empty, tone = 'pi
           <Text style={styles.personName}>{person.display_name || title}</Text>
           <Text style={styles.personSub}>
             {person.online ? 'Online' : 'Offline'} · {fmtAgo(person.last_seen)}
+            {person.app_state ? ` · ${person.app_state}` : ''}
           </Text>
+          {(person.mood || person.activity || person.status_text) && (
+            <Text style={styles.statusLine} numberOfLines={2}>
+              {person.mood ? `${person.mood} ` : ''}
+              {person.activity ? `${person.activity} · ` : ''}
+              {person.status_text || ''}
+            </Text>
+          )}
         </View>
+        <Pill
+          label={person.online ? 'Live' : 'Away'}
+          tone={person.online ? 'ok' : 'neutral'}
+          dot
+        />
       </View>
       <BatteryBar
-        pct={person.battery}
-        charging={person.charging}
-        lowPower={person.low_power}
+        pct={batt}
+        charging={!!person.charging}
+        lowPower={!!person.low_power}
       />
       <View style={styles.grid}>
-        <Metric label="Place" value={person.place_name || '—'} />
-        <Metric
-          label="City"
-          value={[person.place_city, person.place_region].filter(Boolean).join(', ') || '—'}
-        />
-        <Metric label="Country" value={person.place_country || '—'} />
-        <Metric label="Time here" value={fmtDuration(person.time_at_place_s)} />
+        <Metric label="Place" value={fmtPlace(person)} />
+        <Metric label="City" value={fmtCity(person)} />
+        <Metric label="Country" value={displayVal(person.place_country)} />
+        <Metric label="Time here" value={fmtDuration(safeNum(person.time_at_place_s))} />
         <Metric label="Motion" value={motionLabel(person.motion)} />
-        <Metric
-          label="Speed"
-          value={
-            person.speed_kmh != null
-              ? `${person.speed_kmh} km/h`
-              : person.speed_mps != null
-                ? `${(person.speed_mps * 3.6).toFixed(0)} km/h`
-                : '—'
-          }
-        />
+        <Metric label="Speed" value={fmtSpeed(person)} />
         <Metric
           label="Heading"
           value={
-            person.heading_cardinal ||
-            (person.heading != null ? `${Math.round(person.heading)}°` : '—')
+            displayVal(person.heading_cardinal) !== '—'
+              ? person.heading_cardinal
+              : heading != null
+                ? `${Math.round(heading)}°`
+                : '—'
           }
         />
-        <Metric
-          label="Altitude"
-          value={person.altitude_m != null ? `${Math.round(person.altitude_m)} m` : '—'}
-        />
-        <Metric
-          label="Accuracy"
-          value={person.accuracy_m != null ? `±${Math.round(person.accuracy_m)} m` : '—'}
-        />
+        <Metric label="Altitude" value={alt != null ? `${Math.round(alt)} m` : '—'} />
+        <Metric label="Accuracy" value={acc != null ? `±${Math.round(acc)} m` : '—'} />
         <Metric
           label="Home"
           value={
@@ -1697,47 +1849,64 @@ const PersonIntel = memo(function PersonIntel({ person, title, empty, tone = 'pi
                 : fmtDist(person.dist_from_home_m)
           }
         />
-        <Metric label="Network" value={net} />
-        <Metric label="Cell" value={person.cellular_gen || '—'} />
-        <Metric label="Carrier" value={person.carrier || '—'} />
-        <Metric
-          label="Weather"
-          value={
-            person.weather_temp_c != null
-              ? `${person.weather_temp_c}° ${person.weather_label || ''}`
-              : '—'
-          }
-        />
-        <Metric label="Day/night" value={person.day_night || '—'} />
+        <Metric label="Network" value={fmtNetwork(person)} />
+        <Metric label="Cell" value={displayVal(person.cellular_gen)} />
+        <Metric label="Carrier" value={displayVal(person.carrier)} />
+        <Metric label="Weather" value={fmtWeather(person)} />
+        <Metric label="Day/night" value={displayVal(person.day_night)} />
         <Metric
           label="Local hour"
-          value={person.local_hour != null ? `${person.local_hour}:00` : '—'}
+          value={hour != null ? `${Math.floor(hour)}:00` : '—'}
         />
-        <Metric label="Timezone" value={person.timezone || '—'} />
-        <Metric label="Language" value={person.locale || '—'} />
+        <Metric label="Timezone" value={displayVal(person.timezone)} />
+        <Metric label="Language" value={displayVal(person.locale)} />
         <Metric
           label="Device"
           value={
             [person.device_brand, person.device_model].filter(Boolean).join(' ') ||
-            person.platform ||
-            '—'
+            displayVal(person.platform)
           }
         />
         <Metric
           label="OS"
-          value={[person.os_name, person.os_version].filter(Boolean).join(' ') || '—'}
+          value={
+            [person.os_name, person.os_version].filter(Boolean).join(' ') || '—'
+          }
         />
-        <Metric label="App" value={person.app_version ? `v${person.app_version}` : '—'} />
+        <Metric
+          label="App"
+          value={person.app_version ? `v${person.app_version}` : '—'}
+        />
         <Metric label="Traveled" value={fmtDist(person.traveled_m_today)} />
-        <Metric label="Places" value={person.places_today ?? '—'} />
-        <Metric label="Points" value={person.points_today ?? '—'} />
-        <Metric label="Pings" value={person.ping_count ?? 0} />
-        <Metric label="Notes" value={person.note_count ?? 0} />
+        <Metric
+          label="Places"
+          value={
+            safeNum(person.places_today) != null
+              ? String(Math.round(safeNum(person.places_today)))
+              : '—'
+          }
+        />
+        <Metric
+          label="Points"
+          value={
+            safeNum(person.points_today) != null
+              ? String(Math.round(safeNum(person.points_today)))
+              : '—'
+          }
+        />
+        <Metric
+          label="Pings"
+          value={String(Math.max(0, Math.round(safeNum(person.ping_count) || 0)))}
+        />
+        <Metric
+          label="Notes"
+          value={String(Math.max(0, Math.round(safeNum(person.note_count) || 0)))}
+        />
         <Metric
           label="Coords"
           value={
-            person.lat != null
-              ? `${Number(person.lat).toFixed(3)}, ${Number(person.lng).toFixed(3)}`
+            safeNum(person.lat) != null && safeNum(person.lng) != null
+              ? `${Number(person.lat).toFixed(4)}, ${Number(person.lng).toFixed(4)}`
               : '—'
           }
         />
@@ -1882,9 +2051,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: T.cardBorder,
     marginBottom: 12,
+    backgroundColor: T.bgElevated,
   },
-  map: { flex: 1 },
+  map: { flex: 1, backgroundColor: T.bgElevated },
   mapOverlay: { position: 'absolute', top: 12, left: 12 },
+  mapLoading: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: T.bgElevated,
+    gap: 10,
+  },
+  mapLoadingText: { color: T.textMuted, fontSize: 13, fontWeight: '600' },
   personHead: { flexDirection: 'row', alignItems: 'center' },
   personName: {
     color: T.text,
