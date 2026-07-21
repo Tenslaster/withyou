@@ -1,4 +1,7 @@
-name: iOS IPA (unsigned / no Apple Dev)
+name: iOS IPA (Sideloadly / free Apple ID re-sign)
+
+# Produces an IPA. Install with Sideloadly using a FREE Apple ID (no $99 program).
+# Apple does not allow real-device IPAs with zero Apple identity at all.
 
 on:
   workflow_dispatch:
@@ -16,11 +19,9 @@ jobs:
         working-directory: withyou-app
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
@@ -34,31 +35,58 @@ jobs:
           EXPO_PUBLIC_WITHYOU_API: https://crew.kingdom.forum/withyou
         run: npx expo prebuild --platform ios --no-install --non-interactive
 
+      - name: Patch Podfile — disable code signing on all pods (free-sign friendly)
+        working-directory: withyou-app/ios
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path("Podfile")
+          t = p.read_text()
+          patch = '''
+            installer.pods_project.targets.each do |target|
+              target.build_configurations.each do |config|
+                config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+                config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+                config.build_settings['CODE_SIGN_IDENTITY'] = ''
+                config.build_settings['EXPANDED_CODE_SIGN_IDENTITY'] = ''
+                config.build_settings['ENABLE_BITCODE'] = 'NO'
+              end
+            end
+          '''
+          # Inject before the last `end` of post_install if present, else append post_install
+          if "post_install do |installer|" in t and patch.strip() not in t:
+              # insert after post_install do |installer|
+              t = t.replace(
+                  "post_install do |installer|",
+                  "post_install do |installer|\n" + patch,
+                  1,
+              )
+              p.write_text(t)
+              print("Patched existing post_install")
+          elif "post_install do |installer|" not in t:
+              t += f"\n\npost_install do |installer|\n{patch}\nend\n"
+              p.write_text(t)
+              print("Appended post_install")
+          else:
+              print("Patch already present or structure unknown")
+          PY
+
       - name: Pod install
         working-directory: withyou-app/ios
         run: pod install
 
-      - name: Build archive (no codesign)
+      - name: xcodebuild archive (signing disabled for Sideloadly re-sign)
         working-directory: withyou-app/ios
         env:
           EXPO_PUBLIC_WITHYOU_API: https://crew.kingdom.forum/withyou
         run: |
           set -euo pipefail
           export NODE_BINARY="$(command -v node)"
-          echo "NODE_BINARY=$NODE_BINARY"
-          ls -la
+          export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
           WORKSPACE=$(ls -d *.xcworkspace | head -n 1)
-          echo "WORKSPACE=$WORKSPACE"
-          xcodebuild -list -workspace "$WORKSPACE"
-          # Prefer app scheme WithYou (not Pods like EXConstants)
           SCHEME="WithYou"
-          if ! xcodebuild -list -workspace "$WORKSPACE" -json | grep -q "\"$SCHEME\""; then
-            SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" -json | python3 -c "import sys,json; d=json.load(sys.stdin); ss=d['workspace']['schemes']; print(next((s for s in ss if 'WithYou' in s and 'Pods' not in s), ss[0]))")
-          fi
-          echo "SCHEME=$SCHEME"
-          set -o pipefail
-          # Ad-hoc identity "-" lets ExpoModulesJSI scripts run without a paid Apple team.
-          # Sideloadly will re-sign for device install.
+          echo "WORKSPACE=$WORKSPACE SCHEME=$SCHEME NODE=$NODE_BINARY"
+          # Disable user script sandbox that breaks Expo module scripts on CI
           xcodebuild \
             -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
@@ -66,34 +94,32 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -archivePath "$PWD/build/WithYou.xcarchive" \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED=YES \
-            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM="" \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO \
             ONLY_ACTIVE_ARCH=NO \
-            archive 2>&1 | tee /tmp/xcodebuild.log | tail -n 100
+            archive 2>&1 | tee /tmp/xcodebuild.log | tail -n 120
           if [ ! -d "$PWD/build/WithYou.xcarchive" ]; then
-            echo "==== FULL ERROR SNIPPET ===="
-            grep -E "error:|❌|failed" /tmp/xcodebuild.log | tail -n 40 || true
+            echo "==== errors ===="
+            grep -E "error:|❌" /tmp/xcodebuild.log | tail -n 50 || true
             exit 1
           fi
 
-      - name: Pack unsigned IPA
+      - name: Pack IPA for Sideloadly
         working-directory: withyou-app/ios
         run: |
           set -euo pipefail
           mkdir -p Payload
           APP=$(find build/WithYou.xcarchive/Products/Applications -name "*.app" | head -n 1)
           echo "APP=$APP"
-          test -n "$APP"
           cp -R "$APP" Payload/
-          zip -qry WithYou-unsigned.ipa Payload
-          ls -la WithYou-unsigned.ipa
-          cp WithYou-unsigned.ipa ../WithYou-unsigned.ipa
+          zip -qry WithYou-for-Sideloadly.ipa Payload
+          ls -la WithYou-for-Sideloadly.ipa
+          cp WithYou-for-Sideloadly.ipa ../WithYou-for-Sideloadly.ipa
 
-      - name: Upload IPA artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: WithYou-ipa
-          path: withyou-app/WithYou-unsigned.ipa
-          if-no-files-found: error
+          name: WithYou-ipa-sideloadly
+          path: withyou-app/WithYou-for-Sideloadly.ipa
