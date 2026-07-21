@@ -2,7 +2,7 @@
   "expo": {
     "name": "WithYou",
     "slug": "withyou",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -29,7 +29,7 @@
     },
     "android": {
       "package": "com.withyou.pair",
-      "versionCode": 5,
+      "versionCode": 6,
       "adaptiveIcon": {
         "backgroundColor": "#ffb6c1",
         "foregroundImage": "./assets/android-icon-foreground.png",

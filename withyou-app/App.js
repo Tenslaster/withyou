@@ -1,6 +1,6 @@
 /**
  * WithYou — private couple presence + deep partner intel
- * Live location · battery · motion · place · weather · care · SOS · stats
+ * Polished product UI · live intel · care · SOS · stats
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -9,17 +9,16 @@ import {
   AppState,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   RefreshControl,
   SafeAreaView,
   ScrollView,
   Share,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Location from 'expo-location';
 import * as Battery from 'expo-battery';
 import * as SecureStore from 'expo-secure-store';
@@ -30,6 +29,22 @@ import * as Localization from 'expo-localization';
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
+import {
+  T,
+  SoftPress,
+  PrimaryButton,
+  GhostButton,
+  Card,
+  SectionLabel,
+  Pill,
+  Avatar,
+  BatteryBar,
+  Metric,
+  Segmented,
+  AlertBanner,
+  Input,
+  hapticSuccess,
+} from './theme';
 
 // --- Config -----------------------------------------------------------------
 const DEFAULT_API =
@@ -147,13 +162,6 @@ function fmtDuration(sec) {
   return m ? `${h}h ${m}m` : `${h}h`;
 }
 
-function batteryColor(pct, charging) {
-  if (charging) return '#34d399';
-  if (pct == null) return '#94a3b8';
-  if (pct <= 15) return '#f87171';
-  if (pct <= 30) return '#fbbf24';
-  return '#38bdf8';
-}
 
 function motionLabel(m) {
   const map = {
@@ -214,6 +222,8 @@ export default function App() {
   const [activity, setActivity] = useState('');
   const [loveDraft, setLoveDraft] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [tab, setTab] = useState('live'); // live | intel | care | me
+  const [syncing, setSyncing] = useState(false);
   const mapRef = useRef(null);
   const tokenRef = useRef(null);
   const weatherCache = useRef({ at: 0, data: null, key: '' });
@@ -410,6 +420,7 @@ export default function App() {
   const heartbeat = useCallback(async () => {
     const t = tokenRef.current;
     if (!t) return;
+    setSyncing(true);
     try {
       const body = await collectTelemetry();
       const data = await api('/heartbeat', { method: 'POST', token: t, body });
@@ -417,6 +428,8 @@ export default function App() {
       setErr('');
     } catch (e) {
       setErr(e.message || 'Sync failed');
+    } finally {
+      setSyncing(false);
     }
   }, [collectTelemetry]);
 
@@ -603,7 +616,8 @@ export default function App() {
       });
       setPair(data);
       setLoveDraft('');
-      Alert.alert('Sent 💕', 'Your partner will see this note.');
+      hapticSuccess();
+      Alert.alert('Sent', 'Your partner will see this note.');
     } catch (e) {
       Alert.alert('Failed', e.message || 'Could not send');
     }
@@ -613,7 +627,8 @@ export default function App() {
     try {
       const data = await api('/care/ping', { method: 'POST', token, body: {} });
       setPair(data);
-      Alert.alert('Sent 💗', 'Thinking of you — partner notified.');
+      hapticSuccess();
+      Alert.alert('Sent', 'Thinking of you — partner notified.');
     } catch (e) {
       Alert.alert('Failed', e.message || 'Could not ping');
     }
@@ -730,11 +745,24 @@ export default function App() {
 
   if (boot) {
     return (
-      <SafeAreaView style={styles.boot}>
+      <View style={styles.boot}>
         <StatusBar style="light" />
-        <ActivityIndicator size="large" color="#f472b6" />
+        <LinearGradient
+          colors={['#1A1024', T.bg, '#0B0810']}
+          style={StyleSheet.absoluteFill}
+        />
+        <View style={styles.bootBadge}>
+          <LinearGradient
+            colors={['#FBCFE8', '#F472B6', '#DB2777']}
+            style={styles.bootLogo}
+          >
+            <Text style={{ fontSize: 36 }}>💕</Text>
+          </LinearGradient>
+        </View>
         <Text style={styles.bootText}>WithYou</Text>
-      </SafeAreaView>
+        <Text style={styles.bootSub}>Private couple presence</Text>
+        <ActivityIndicator color={T.pink} style={{ marginTop: 28 }} />
+      </View>
     );
   }
 
@@ -743,6 +771,11 @@ export default function App() {
     return (
       <SafeAreaView style={styles.safe}>
         <StatusBar style="light" />
+        <LinearGradient
+          colors={['#1A1024', T.bg]}
+          style={StyleSheet.absoluteFill}
+          pointerEvents="none"
+        />
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -750,66 +783,70 @@ export default function App() {
           <ScrollView
             contentContainerStyle={styles.pad}
             keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
           >
-            <Text style={styles.logo}>WithYou</Text>
-            <Text style={styles.tagline}>
-              One of you creates a pair and gets a code. The other only needs
-              that code to join — then you see live partner intel.
-            </Text>
-            <Text style={styles.label}>Invite code (to join)</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. 30A070"
-              placeholderTextColor="#64748b"
-              autoCapitalize="characters"
-              autoCorrect={false}
-              autoComplete="off"
-              textContentType="oneTimeCode"
-              value={inviteInput}
-              onChangeText={(t) => setInviteInput(cleanInviteCode(t))}
-              maxLength={8}
-            />
-            <Pressable style={[styles.btn, styles.btnGhost]} onPress={joinPair} disabled={busy}>
-              {busy ? (
-                <ActivityIndicator color="#f472b6" />
-              ) : (
-                <Text style={styles.btnGhostText}>Join pair</Text>
-              )}
-            </Pressable>
-            <View style={styles.divider}>
-              <Text style={styles.dividerText}>or create a new pair</Text>
+            <View style={styles.pairHero}>
+              <LinearGradient
+                colors={['#FBCFE8', '#F472B6', '#DB2777']}
+                style={styles.bootLogo}
+              >
+                <Text style={{ fontSize: 32 }}>💕</Text>
+              </LinearGradient>
+              <Text style={styles.logo}>WithYou</Text>
+              <Text style={styles.tagline}>
+                Live presence for two. Create a pair, share a code, stay close.
+              </Text>
             </View>
-            <Text style={styles.label}>Your name (optional)</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. Alex"
-              placeholderTextColor="#64748b"
-              value={name}
-              onChangeText={setName}
-              autoCorrect={false}
-              returnKeyType="done"
-            />
-            <Text style={styles.label}>Emoji (optional)</Text>
-            <TextInput
-              style={styles.input}
-              value={emoji}
-              onChangeText={setEmoji}
-              maxLength={4}
-            />
-            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={createPair} disabled={busy}>
-              {busy ? (
-                <ActivityIndicator color="#0f0a12" />
-              ) : (
-                <Text style={styles.btnPrimaryText}>Create pair → get code</Text>
-              )}
-            </Pressable>
-            {!!err && <Text style={styles.error}>{err}</Text>}
+
+            <Card>
+              <SectionLabel>Join with code</SectionLabel>
+              <Input
+                placeholder="6-character invite code"
+                autoCapitalize="characters"
+                autoCorrect={false}
+                autoComplete="off"
+                textContentType="oneTimeCode"
+                value={inviteInput}
+                onChangeText={(t) => setInviteInput(cleanInviteCode(t))}
+                maxLength={8}
+                style={styles.codeInput}
+              />
+              <GhostButton title="Join pair" onPress={joinPair} loading={busy} />
+            </Card>
+
+            <View style={styles.divider}>
+              <View style={styles.divLine} />
+              <Text style={styles.dividerText}>or create</Text>
+              <View style={styles.divLine} />
+            </View>
+
+            <Card>
+              <SectionLabel>Start a new pair</SectionLabel>
+              <Text style={styles.fieldHint}>Name (optional)</Text>
+              <Input
+                placeholder="e.g. Alex"
+                value={name}
+                onChangeText={setName}
+                autoCorrect={false}
+                returnKeyType="done"
+              />
+              <Text style={[styles.fieldHint, { marginTop: 10 }]}>Emoji</Text>
+              <Input value={emoji} onChangeText={setEmoji} maxLength={4} />
+              <PrimaryButton
+                title="Create pair · get code"
+                onPress={createPair}
+                loading={busy}
+                style={{ marginTop: 8 }}
+              />
+            </Card>
+
+            {!!err && (
+              <AlertBanner title="Something went wrong" body={err} tone="red" />
+            )}
+
             <Text style={styles.hint}>
-              How to pair:{'\n'}
-              • Phone A: Create pair → share the 6-char code{'\n'}
-              • Phone B: paste code → Join pair{'\n'}
-              {'\n'}
-              API: {API_URL}
+              Phone A creates · Phone B joins with the code only{'\n'}
+              Encrypted to your private server · v{APP_VERSION}
             </Text>
           </ScrollView>
         </KeyboardAvoidingView>
@@ -823,64 +860,84 @@ export default function App() {
       <StatusBar style="light" />
       <ScrollView
         contentContainerStyle={styles.padBottom}
+        showsVerticalScrollIndicator={false}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor="#f472b6" />
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={refresh}
+            tintColor={T.pink}
+            colors={[T.pink]}
+          />
         }
       >
+        {/* App bar */}
         <View style={styles.header}>
-          <View>
+          <View style={styles.headerLeft}>
             <Text style={styles.logoSm}>WithYou</Text>
-            <Text style={styles.days}>
-              {pair?.days_together != null ? `${pair.days_together} days together` : '—'}
-              {createdInvite || pair?.invite_code
-                ? ` · code ${createdInvite || pair?.invite_code}`
-                : ''}
-            </Text>
+            <View style={styles.headerMeta}>
+              <Pill
+                label={
+                  pair?.days_together != null
+                    ? `${pair.days_together}d together`
+                    : 'New pair'
+                }
+                tone="pink"
+              />
+              {syncing ? (
+                <Pill label="Syncing" tone="blue" />
+              ) : stats?.both_online ? (
+                <Pill label="Both online" tone="ok" dot />
+              ) : (
+                <Pill
+                  label={partner?.online ? 'Partner online' : 'Live'}
+                  tone={partner?.online ? 'ok' : 'neutral'}
+                  dot={!!partner?.online}
+                />
+              )}
+            </View>
           </View>
-          <Pressable onPress={leavePair} hitSlop={10}>
+          <SoftPress onPress={leavePair} hitSlop={12}>
             <Text style={styles.leave}>Leave</Text>
-          </Pressable>
+          </SoftPress>
         </View>
 
         {partner?.sos_active ? (
-          <View style={[styles.banner, styles.sosBanner]}>
-            <Text style={styles.bannerTitle}>🚨 PARTNER SOS</Text>
-            <Text style={styles.bannerBody}>
-              {partner.sos_message || 'Needs you'} · {fmtAgo(partner.sos_at)}
-            </Text>
-          </View>
+          <AlertBanner
+            title="Partner SOS"
+            body={partner.sos_message || 'Needs you now'}
+            meta={fmtAgo(partner.sos_at)}
+            tone="red"
+          />
         ) : null}
 
         {me?.love_note ? (
-          <View style={styles.banner}>
-            <Text style={styles.bannerTitle}>
-              💕 Note from {me.love_note_from || 'partner'}
-            </Text>
-            <Text style={styles.bannerBody}>{me.love_note}</Text>
-            <Text style={styles.meta}>{fmtAgo(me.love_note_at)}</Text>
-          </View>
+          <AlertBanner
+            title={`Note from ${me.love_note_from || 'partner'}`}
+            body={me.love_note}
+            meta={fmtAgo(me.love_note_at)}
+            tone="pink"
+          />
         ) : null}
 
         {me?.thinking_of_you_at ? (
-          <View style={[styles.banner, { borderColor: '#f472b6' }]}>
-            <Text style={styles.bannerTitle}>💗 Thinking of you</Text>
-            <Text style={styles.bannerBody}>
-              Partner pinged you {fmtAgo(me.thinking_of_you_at)}
-            </Text>
-          </View>
+          <AlertBanner
+            title="Thinking of you"
+            body={`Partner pinged you ${fmtAgo(me.thinking_of_you_at)}`}
+            tone="pink"
+          />
         ) : null}
 
         {!pair?.partner_joined && !partner ? (
-          <View style={styles.banner}>
-            <Text style={styles.bannerTitle}>Waiting for partner</Text>
-            <Text style={styles.bannerBody}>
-              Share this code. They only need the code to Join.
+          <Card style={styles.mx} accent="pink">
+            <SectionLabel>Waiting for partner</SectionLabel>
+            <Text style={styles.waitBody}>
+              Share this invite code. They only need the code to join.
             </Text>
-            <Text style={[styles.code, { fontSize: 28, marginTop: 10, textAlign: 'center' }]}>
+            <Text style={styles.inviteCode}>
               {createdInvite || pair?.invite_code || '—'}
             </Text>
-            <Pressable
-              style={[styles.btn, styles.btnPrimary, { marginTop: 12 }]}
+            <PrimaryButton
+              title="Share invite code"
               onPress={() => {
                 const code = createdInvite || pair?.invite_code || '';
                 if (!code) return;
@@ -888,241 +945,369 @@ export default function App() {
                   () => {}
                 );
               }}
-            >
-              <Text style={styles.btnPrimaryText}>Share invite code</Text>
-            </Pressable>
-          </View>
-        ) : null}
-
-        {/* Map */}
-        <View style={styles.mapWrap}>
-          <MapView
-            ref={mapRef}
-            style={styles.map}
-            provider={PROVIDER_DEFAULT}
-            initialRegion={region}
-            region={region}
-            userInterfaceStyle="dark"
-          >
-            {trailCoords.length > 1 ? (
-              <Polyline coordinates={trailCoords} strokeColor="#f472b688" strokeWidth={3} />
-            ) : null}
-            {me?.lat != null && me?.lng != null ? (
-              <Marker
-                coordinate={{ latitude: me.lat, longitude: me.lng }}
-                title={me.display_name || 'You'}
-                description={me.place_name || 'You'}
-                pinColor="#38bdf8"
-              />
-            ) : null}
-            {partner?.lat != null && partner?.lng != null ? (
-              <Marker
-                coordinate={{ latitude: partner.lat, longitude: partner.lng }}
-                title={partner.display_name || 'Partner'}
-                description={
-                  partner.place_name ||
-                  (partner.online ? 'Online' : fmtAgo(partner.last_seen))
-                }
-                pinColor="#f472b6"
-              />
-            ) : null}
-          </MapView>
-        </View>
-
-        <View style={styles.distRow}>
-          <Text style={styles.distValue}>{fmtDist(pair?.distance_m)}</Text>
-          <Text style={styles.distLabel}>apart</Text>
-          {stats?.both_online ? (
-            <Text style={styles.bothOnline}> · both online</Text>
-          ) : null}
-          {!!err && <Text style={styles.errorInline}>{err}</Text>}
-        </View>
-
-        {/* Partner deep intel — 20+ signals */}
-        <PersonIntel title="Partner" person={partner} emptyHint="Not joined yet" />
-        <PersonIntel title="You" person={me} emptyHint="Share location to appear" />
-
-        {/* Couple stats */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Couple stats</Text>
-          <View style={styles.grid}>
-            <IntelTile label="Days together" value={pair?.days_together ?? '—'} />
-            <IntelTile label="Now apart" value={fmtDist(pair?.distance_m)} />
-            <IntelTile label="Max apart today" value={fmtDist(stats?.max_distance_m_today)} />
-            <IntelTile label="Closest today" value={fmtDist(stats?.min_distance_m_today)} />
-            <IntelTile label="Care pings" value={stats?.care_pings_total ?? 0} />
-            <IntelTile label="Love notes" value={stats?.love_notes_total ?? 0} />
-            <IntelTile
-              label="Partner traveled"
-              value={
-                partner?.traveled_m_today != null
-                  ? fmtDist(partner.traveled_m_today)
-                  : '—'
-              }
+              style={{ marginTop: 8 }}
             />
-            <IntelTile label="Partner places" value={partner?.places_today ?? '—'} />
-          </View>
-        </View>
+          </Card>
+        ) : null}
 
-        {/* Care actions */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Care</Text>
-          <View style={styles.rowWrap}>
-            <Pressable style={[styles.chip, styles.chipPink]} onPress={sendPing}>
-              <Text style={styles.chipText}>💗 Thinking of you</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.chip, me?.sos_active ? styles.chipDanger : styles.chipGhost]}
-              onPress={toggleSos}
-            >
-              <Text style={styles.chipText}>
-                {me?.sos_active ? '✅ Clear SOS' : '🚨 SOS'}
+        {/* Hero distance */}
+        <Card style={styles.mx} accent="blue">
+          <View style={styles.heroRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.heroLabel}>Distance</Text>
+              <Text style={styles.heroDist}>{fmtDist(pair?.distance_m)}</Text>
+              <Text style={styles.heroSub}>
+                {partner?.place_name
+                  ? `Partner · ${partner.place_name}`
+                  : partner
+                    ? `Last seen ${fmtAgo(partner.last_seen)}`
+                    : 'Waiting for partner'}
               </Text>
-            </Pressable>
-            <Pressable style={[styles.chip, styles.chipGhost]} onPress={setHomeHere}>
-              <Text style={styles.chipText}>🏠 Set home here</Text>
-            </Pressable>
+            </View>
+            <View style={styles.heroAvatars}>
+              <Avatar
+                emoji={me?.emoji}
+                online={me?.online}
+                tone="blue"
+                size={44}
+              />
+              <View style={{ width: 8 }} />
+              <Avatar
+                emoji={partner?.emoji || '💗'}
+                online={partner?.online}
+                tone="pink"
+                size={44}
+              />
+            </View>
           </View>
-          <TextInput
-            style={[styles.input, { marginTop: 10, marginBottom: 8 }]}
-            placeholder="Love note to partner…"
-            placeholderTextColor="#64748b"
-            value={loveDraft}
-            onChangeText={setLoveDraft}
-            maxLength={280}
-          />
-          <Pressable style={[styles.btn, styles.btnPrimary]} onPress={sendLoveNote}>
-            <Text style={styles.btnPrimaryText}>Send love note</Text>
-          </Pressable>
-        </View>
+          {!!err && <Text style={styles.errorInline}>{err}</Text>}
+        </Card>
 
-        {/* Activity + mood */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Your activity</Text>
-          <View style={styles.rowWrap}>
-            {ACTIVITIES.map((a) => (
-              <Pressable
-                key={a.id}
-                style={[styles.chip, activity === a.id && styles.chipPink]}
-                onPress={() => pickActivity(a.id)}
-              >
-                <Text style={styles.chipText}>{a.label}</Text>
-              </Pressable>
-            ))}
-          </View>
-          <Text style={[styles.cardTitle, { marginTop: 14 }]}>Mood</Text>
-          <View style={styles.rowWrap}>
-            {MOODS.map((m) => (
-              <Pressable
-                key={m}
-                style={[styles.moodBtn, mood === m && styles.chipPink]}
-                onPress={() => setMood(m)}
-              >
-                <Text style={{ fontSize: 22 }}>{m}</Text>
-              </Pressable>
-            ))}
-          </View>
-          <TextInput
-            style={[styles.input, { marginTop: 10 }]}
-            placeholder="Status message"
-            placeholderTextColor="#64748b"
-            value={statusText}
-            onChangeText={setStatusText}
-          />
-          <Pressable style={[styles.btn, styles.btnPrimary, { marginTop: 10 }]} onPress={heartbeat}>
-            <Text style={styles.btnPrimaryText}>Update now</Text>
-          </Pressable>
-        </View>
+        {/* Tabs */}
+        <Segmented
+          value={tab}
+          onChange={setTab}
+          tabs={[
+            { id: 'live', label: 'Live' },
+            { id: 'intel', label: 'Intel' },
+            { id: 'care', label: 'Care' },
+            { id: 'me', label: 'You' },
+          ]}
+        />
 
-        {/* Trail list */}
-        {pair?.partner_trail?.length ? (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Partner trail</Text>
-            {[...pair.partner_trail].reverse().slice(0, 8).map((h, i) => (
-              <Text key={`${h.ts}-${i}`} style={styles.meta}>
-                {fmtAgo(h.ts)}
-                {h.place_name ? ` · ${h.place_name}` : ''}
-                {h.battery != null ? ` · 🔋${Math.round(h.battery)}%` : ''}
-              </Text>
-            ))}
+        {tab === 'live' ? (
+          <View style={styles.tabPad}>
+            <View style={styles.mapWrap}>
+              <MapView
+                ref={mapRef}
+                style={styles.map}
+                provider={PROVIDER_DEFAULT}
+                initialRegion={region}
+                region={region}
+                userInterfaceStyle="dark"
+              >
+                {trailCoords.length > 1 ? (
+                  <Polyline
+                    coordinates={trailCoords}
+                    strokeColor="#F472B6AA"
+                    strokeWidth={3}
+                  />
+                ) : null}
+                {me?.lat != null && me?.lng != null ? (
+                  <Marker
+                    coordinate={{ latitude: me.lat, longitude: me.lng }}
+                    title={me.display_name || 'You'}
+                    description={me.place_name || 'You'}
+                    pinColor="#38bdf8"
+                  />
+                ) : null}
+                {partner?.lat != null && partner?.lng != null ? (
+                  <Marker
+                    coordinate={{ latitude: partner.lat, longitude: partner.lng }}
+                    title={partner.display_name || 'Partner'}
+                    description={
+                      partner.place_name ||
+                      (partner.online ? 'Online' : fmtAgo(partner.last_seen))
+                    }
+                    pinColor="#f472b6"
+                  />
+                ) : null}
+              </MapView>
+              <View style={styles.mapOverlay}>
+                <Pill
+                  label={partner?.motion ? motionLabel(partner.motion) : 'Map'}
+                  tone="pink"
+                />
+              </View>
+            </View>
+
+            <PersonHero person={partner} title="Partner" empty="Not joined yet" />
+            <PersonHero person={me} title="You" empty="Enable location" tone="blue" />
+
+            <Card>
+              <SectionLabel>Today</SectionLabel>
+              <View style={styles.grid}>
+                <Metric label="Days" value={pair?.days_together ?? '—'} icon="📅" />
+                <Metric label="Apart now" value={fmtDist(pair?.distance_m)} icon="📍" />
+                <Metric
+                  label="Max apart"
+                  value={fmtDist(stats?.max_distance_m_today)}
+                  icon="↔️"
+                />
+                <Metric
+                  label="Closest"
+                  value={fmtDist(stats?.min_distance_m_today)}
+                  icon="💞"
+                />
+                <Metric label="Pings" value={stats?.care_pings_total ?? 0} icon="💗" />
+                <Metric label="Notes" value={stats?.love_notes_total ?? 0} icon="✉️" />
+              </View>
+            </Card>
           </View>
         ) : null}
 
-        <Text style={styles.footer}>
-          {Device.modelName || Platform.OS} · v{APP_VERSION}
-          {'\n'}
-          Auto-shares live intel with your pair only. Pull to refresh.
-        </Text>
+        {tab === 'intel' ? (
+          <View style={styles.tabPad}>
+            <PersonIntel person={partner} title="Partner" empty="Not joined yet" />
+            <PersonIntel person={me} title="You" empty="Share location" tone="blue" />
+            {pair?.partner_trail?.length ? (
+              <Card>
+                <SectionLabel>Partner trail</SectionLabel>
+                {[...pair.partner_trail]
+                  .reverse()
+                  .slice(0, 8)
+                  .map((h, i) => (
+                    <View key={`${h.ts}-${i}`} style={styles.trailRow}>
+                      <View style={styles.trailDot} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.trailTitle}>
+                          {h.place_name || 'Location update'}
+                        </Text>
+                        <Text style={styles.trailMeta}>
+                          {fmtAgo(h.ts)}
+                          {h.battery != null
+                            ? ` · ${Math.round(h.battery)}% battery`
+                            : ''}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+              </Card>
+            ) : null}
+          </View>
+        ) : null}
+
+        {tab === 'care' ? (
+          <View style={styles.tabPad}>
+            <Card>
+              <SectionLabel>Quick actions</SectionLabel>
+              <View style={styles.actionGrid}>
+                <SoftPress style={styles.actionTile} onPress={sendPing} haptic="success">
+                  <Text style={styles.actionEmoji}>💗</Text>
+                  <Text style={styles.actionLbl}>Thinking of you</Text>
+                </SoftPress>
+                <SoftPress
+                  style={[styles.actionTile, me?.sos_active && styles.actionDanger]}
+                  onPress={toggleSos}
+                  haptic="med"
+                >
+                  <Text style={styles.actionEmoji}>{me?.sos_active ? '✅' : '🚨'}</Text>
+                  <Text style={styles.actionLbl}>
+                    {me?.sos_active ? 'Clear SOS' : 'Send SOS'}
+                  </Text>
+                </SoftPress>
+                <SoftPress style={styles.actionTile} onPress={setHomeHere}>
+                  <Text style={styles.actionEmoji}>🏠</Text>
+                  <Text style={styles.actionLbl}>Set home here</Text>
+                </SoftPress>
+                <SoftPress style={styles.actionTile} onPress={heartbeat}>
+                  <Text style={styles.actionEmoji}>↻</Text>
+                  <Text style={styles.actionLbl}>Sync now</Text>
+                </SoftPress>
+              </View>
+            </Card>
+            <Card>
+              <SectionLabel>Love note</SectionLabel>
+              <Input
+                placeholder="Write something sweet…"
+                value={loveDraft}
+                onChangeText={setLoveDraft}
+                maxLength={280}
+                multiline
+                style={{ minHeight: 72, textAlignVertical: 'top' }}
+              />
+              <PrimaryButton title="Send note" onPress={sendLoveNote} style={{ marginTop: 10 }} />
+            </Card>
+          </View>
+        ) : null}
+
+        {tab === 'me' ? (
+          <View style={styles.tabPad}>
+            <Card>
+              <SectionLabel>Activity</SectionLabel>
+              <View style={styles.rowWrap}>
+                {ACTIVITIES.map((a) => (
+                  <SoftPress
+                    key={a.id}
+                    style={[styles.chip, activity === a.id && styles.chipOn]}
+                    onPress={() => pickActivity(a.id)}
+                  >
+                    <Text style={styles.chipText}>{a.label}</Text>
+                  </SoftPress>
+                ))}
+              </View>
+            </Card>
+            <Card>
+              <SectionLabel>Mood</SectionLabel>
+              <View style={styles.rowWrap}>
+                {MOODS.map((m) => (
+                  <SoftPress
+                    key={m}
+                    style={[styles.moodBtn, mood === m && styles.chipOn]}
+                    onPress={() => setMood(m)}
+                  >
+                    <Text style={{ fontSize: 22 }}>{m}</Text>
+                  </SoftPress>
+                ))}
+              </View>
+              <Text style={[styles.fieldHint, { marginTop: 14 }]}>Status</Text>
+              <Input
+                placeholder="What are you up to?"
+                value={statusText}
+                onChangeText={setStatusText}
+              />
+              <PrimaryButton
+                title="Update status"
+                onPress={heartbeat}
+                loading={syncing}
+                style={{ marginTop: 10 }}
+              />
+            </Card>
+            <Card>
+              <SectionLabel>Device</SectionLabel>
+              <Text style={styles.metaLine}>
+                {Device.modelName || Platform.OS} · v{APP_VERSION}
+              </Text>
+              <Text style={styles.metaLine}>
+                Auto-shares live intel with your pair only.
+              </Text>
+              {(createdInvite || pair?.invite_code) && (
+                <Text style={[styles.metaLine, { color: T.pink, marginTop: 8 }]}>
+                  Invite · {createdInvite || pair?.invite_code}
+                </Text>
+              )}
+            </Card>
+          </View>
+        ) : null}
+
+        <Text style={styles.footer}>Pull to refresh · Private by design</Text>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-function IntelTile({ label, value }) {
+function PersonHero({ person, title, empty, tone = 'pink' }) {
+  if (!person) {
+    return (
+      <Card>
+        <SectionLabel>{title}</SectionLabel>
+        <Text style={styles.muted}>{empty}</Text>
+      </Card>
+    );
+  }
   return (
-    <View style={styles.tile}>
-      <Text style={styles.tileVal} numberOfLines={2}>
-        {value == null || value === '' ? '—' : String(value)}
-      </Text>
-      <Text style={styles.tileLbl}>{label}</Text>
-    </View>
+    <Card accent={tone === 'blue' ? 'blue' : 'pink'}>
+      <View style={styles.personHead}>
+        <Avatar
+          emoji={person.emoji}
+          online={person.online}
+          tone={tone}
+          size={52}
+        />
+        <View style={{ flex: 1, marginLeft: 12 }}>
+          <Text style={styles.personName}>{person.display_name || title}</Text>
+          <Text style={styles.personSub}>
+            {person.online ? 'Online' : 'Offline'} · {fmtAgo(person.last_seen)}
+          </Text>
+          {(person.mood || person.activity || person.status_text) && (
+            <Text style={styles.statusLine} numberOfLines={2}>
+              {person.mood ? `${person.mood} ` : ''}
+              {person.activity ? `${person.activity} · ` : ''}
+              {person.status_text || ''}
+            </Text>
+          )}
+        </View>
+        <Pill
+          label={person.online ? 'Live' : 'Away'}
+          tone={person.online ? 'ok' : 'neutral'}
+          dot
+        />
+      </View>
+      <BatteryBar
+        pct={person.battery}
+        charging={person.charging}
+        lowPower={person.low_power}
+      />
+      <View style={[styles.grid, { marginTop: 4 }]}>
+        <Metric
+          label="Place"
+          value={person.place_name || (person.lat != null ? 'GPS' : '—')}
+        />
+        <Metric label="Motion" value={motionLabel(person.motion)} />
+        <Metric
+          label="Weather"
+          value={
+            person.weather_temp_c != null
+              ? `${person.weather_temp_c}°`
+              : '—'
+          }
+        />
+      </View>
+    </Card>
   );
 }
 
-function PersonIntel({ title, person, emptyHint }) {
+function PersonIntel({ person, title, empty, tone = 'pink' }) {
   if (!person) {
     return (
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>{title}</Text>
-        <Text style={styles.muted}>{emptyHint}</Text>
-      </View>
+      <Card>
+        <SectionLabel>{title}</SectionLabel>
+        <Text style={styles.muted}>{empty}</Text>
+      </Card>
     );
   }
-  const pct = person.battery;
-  const bc = batteryColor(pct, person.charging);
   const net =
     person.is_wifi === true
       ? 'Wi‑Fi'
       : person.network ||
-        (person.is_internet === false ? 'Offline net' : person.cellular_gen || '—');
+        (person.is_internet === false ? 'Offline' : person.cellular_gen || '—');
 
   return (
-    <View style={styles.card}>
-      <View style={styles.cardHead}>
-        <Text style={styles.cardTitle}>
-          {person.emoji || '💕'} {person.display_name || title}
-        </Text>
-        <View style={[styles.dot, { backgroundColor: person.online ? '#34d399' : '#64748b' }]} />
+    <Card accent={tone === 'blue' ? 'blue' : undefined}>
+      <View style={styles.personHead}>
+        <Avatar emoji={person.emoji} online={person.online} tone={tone} size={48} />
+        <View style={{ flex: 1, marginLeft: 12 }}>
+          <Text style={styles.personName}>{person.display_name || title}</Text>
+          <Text style={styles.personSub}>
+            {person.online ? 'Online' : 'Offline'} · {fmtAgo(person.last_seen)}
+          </Text>
+        </View>
       </View>
-      <Text style={styles.meta}>
-        {person.online ? 'Online' : 'Offline'} · last seen {fmtAgo(person.last_seen)}
-        {person.app_state ? ` · app ${person.app_state}` : ''}
-      </Text>
-      <Text style={[styles.batt, { color: bc }]}>
-        🔋 {pct != null ? `${Math.round(pct)}%` : '—'}
-        {person.charging ? ' ⚡ charging' : ''}
-        {person.low_power ? ' · Low Power' : ''}
-      </Text>
-      {(person.mood || person.status_text || person.activity) && (
-        <Text style={styles.statusLine}>
-          {person.mood ? `${person.mood} ` : ''}
-          {person.activity ? `[${person.activity}] ` : ''}
-          {person.status_text || ''}
-        </Text>
-      )}
+      <BatteryBar
+        pct={person.battery}
+        charging={person.charging}
+        lowPower={person.low_power}
+      />
       <View style={styles.grid}>
-        <IntelTile
-          label="Place"
-          value={person.place_name || (person.lat != null ? 'GPS only' : 'No GPS')}
-        />
-        <IntelTile
+        <Metric label="Place" value={person.place_name || '—'} />
+        <Metric
           label="City"
           value={[person.place_city, person.place_region].filter(Boolean).join(', ') || '—'}
         />
-        <IntelTile label="Country" value={person.place_country || '—'} />
-        <IntelTile label="Time here" value={fmtDuration(person.time_at_place_s)} />
-        <IntelTile label="Motion" value={motionLabel(person.motion)} />
-        <IntelTile
+        <Metric label="Country" value={person.place_country || '—'} />
+        <Metric label="Time here" value={fmtDuration(person.time_at_place_s)} />
+        <Metric label="Motion" value={motionLabel(person.motion)} />
+        <Metric
           label="Speed"
           value={
             person.speed_kmh != null
@@ -1132,22 +1317,22 @@ function PersonIntel({ title, person, emptyHint }) {
                 : '—'
           }
         />
-        <IntelTile
+        <Metric
           label="Heading"
           value={
             person.heading_cardinal ||
             (person.heading != null ? `${Math.round(person.heading)}°` : '—')
           }
         />
-        <IntelTile
+        <Metric
           label="Altitude"
           value={person.altitude_m != null ? `${Math.round(person.altitude_m)} m` : '—'}
         />
-        <IntelTile
-          label="GPS accuracy"
+        <Metric
+          label="Accuracy"
           value={person.accuracy_m != null ? `±${Math.round(person.accuracy_m)} m` : '—'}
         />
-        <IntelTile
+        <Metric
           label="Home"
           value={
             !person.home_set
@@ -1157,25 +1342,25 @@ function PersonIntel({ title, person, emptyHint }) {
                 : fmtDist(person.dist_from_home_m)
           }
         />
-        <IntelTile label="Network" value={net} />
-        <IntelTile label="Cell" value={person.cellular_gen || '—'} />
-        <IntelTile label="Carrier" value={person.carrier || '—'} />
-        <IntelTile
+        <Metric label="Network" value={net} />
+        <Metric label="Cell" value={person.cellular_gen || '—'} />
+        <Metric label="Carrier" value={person.carrier || '—'} />
+        <Metric
           label="Weather"
           value={
             person.weather_temp_c != null
-              ? `${person.weather_temp_c}° · ${person.weather_label || '—'}`
+              ? `${person.weather_temp_c}° ${person.weather_label || ''}`
               : '—'
           }
         />
-        <IntelTile label="Day / night" value={person.day_night || '—'} />
-        <IntelTile
+        <Metric label="Day/night" value={person.day_night || '—'} />
+        <Metric
           label="Local hour"
           value={person.local_hour != null ? `${person.local_hour}:00` : '—'}
         />
-        <IntelTile label="Timezone" value={person.timezone || '—'} />
-        <IntelTile label="Language" value={person.locale || '—'} />
-        <IntelTile
+        <Metric label="Timezone" value={person.timezone || '—'} />
+        <Metric label="Language" value={person.locale || '—'} />
+        <Metric
           label="Device"
           value={
             [person.device_brand, person.device_model].filter(Boolean).join(' ') ||
@@ -1183,179 +1368,249 @@ function PersonIntel({ title, person, emptyHint }) {
             '—'
           }
         />
-        <IntelTile
+        <Metric
           label="OS"
-          value={
-            [person.os_name, person.os_version].filter(Boolean).join(' ') || '—'
-          }
+          value={[person.os_name, person.os_version].filter(Boolean).join(' ') || '—'}
         />
-        <IntelTile label="App" value={person.app_version ? `v${person.app_version}` : '—'} />
-        <IntelTile label="Traveled today" value={fmtDist(person.traveled_m_today)} />
-        <IntelTile label="Places today" value={person.places_today ?? '—'} />
-        <IntelTile label="GPS points today" value={person.points_today ?? '—'} />
-        <IntelTile label="Pings sent" value={person.ping_count ?? 0} />
-        <IntelTile label="Notes sent" value={person.note_count ?? 0} />
-        <IntelTile
+        <Metric label="App" value={person.app_version ? `v${person.app_version}` : '—'} />
+        <Metric label="Traveled" value={fmtDist(person.traveled_m_today)} />
+        <Metric label="Places" value={person.places_today ?? '—'} />
+        <Metric label="Points" value={person.points_today ?? '—'} />
+        <Metric label="Pings" value={person.ping_count ?? 0} />
+        <Metric label="Notes" value={person.note_count ?? 0} />
+        <Metric
           label="Coords"
           value={
             person.lat != null
-              ? `${Number(person.lat).toFixed(4)}, ${Number(person.lng).toFixed(4)}`
+              ? `${Number(person.lat).toFixed(3)}, ${Number(person.lng).toFixed(3)}`
               : '—'
           }
         />
       </View>
-    </View>
+    </Card>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#0f0a12' },
+  safe: { flex: 1, backgroundColor: T.bg },
   boot: {
     flex: 1,
-    backgroundColor: '#0f0a12',
+    backgroundColor: T.bg,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  bootText: { color: '#f472b6', marginTop: 12, fontSize: 22, fontWeight: '800' },
-  pad: { padding: 20, paddingTop: 36 },
-  padBottom: { paddingBottom: 40 },
-  logo: {
-    color: '#f472b6',
-    fontSize: 36,
-    fontWeight: '900',
-    letterSpacing: 0.5,
-  },
-  logoSm: { color: '#f472b6', fontSize: 22, fontWeight: '900' },
-  tagline: { color: '#94a3b8', marginTop: 10, marginBottom: 24, lineHeight: 20 },
-  label: { color: '#cbd5e1', fontSize: 13, fontWeight: '600', marginBottom: 6 },
-  input: {
-    backgroundColor: '#1a1220',
-    borderWidth: 1,
-    borderColor: '#2d2438',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    color: '#f8fafc',
-    marginBottom: 12,
-  },
-  btn: {
-    borderRadius: 12,
-    paddingVertical: 14,
+  bootBadge: { marginBottom: 16 },
+  bootLogo: {
+    width: 72,
+    height: 72,
+    borderRadius: 22,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  btnPrimary: { backgroundColor: '#f472b6' },
-  btnPrimaryText: { color: '#0f0a12', fontWeight: '800', fontSize: 15 },
-  btnGhost: {
-    borderWidth: 1,
-    borderColor: '#f472b6',
-    backgroundColor: 'transparent',
+  bootText: {
+    color: T.text,
+    fontSize: 28,
+    fontWeight: '900',
+    letterSpacing: -0.5,
   },
-  btnGhostText: { color: '#f472b6', fontWeight: '700' },
-  divider: { alignItems: 'center', marginVertical: 18 },
-  dividerText: { color: '#64748b', fontSize: 12 },
-  error: { color: '#f87171', marginTop: 12 },
-  errorInline: { color: '#f87171', fontSize: 12, marginLeft: 8 },
-  hint: { color: '#475569', fontSize: 11, marginTop: 24, lineHeight: 16 },
+  bootSub: { color: T.textMuted, marginTop: 6, fontSize: 14 },
+  pad: { padding: 20, paddingTop: 28, paddingBottom: 48 },
+  padBottom: { paddingBottom: 48 },
+  tabPad: { paddingHorizontal: 16 },
+  mx: { marginHorizontal: 16 },
+  pairHero: { alignItems: 'center', marginBottom: 28, marginTop: 12 },
+  logo: {
+    color: T.text,
+    fontSize: 34,
+    fontWeight: '900',
+    letterSpacing: -0.6,
+    marginTop: 14,
+  },
+  logoSm: {
+    color: T.text,
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: -0.4,
+  },
+  tagline: {
+    color: T.textSecondary,
+    marginTop: 10,
+    lineHeight: 21,
+    textAlign: 'center',
+    paddingHorizontal: 12,
+    fontSize: 15,
+  },
+  fieldHint: {
+    color: T.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    marginBottom: 6,
+  },
+  codeInput: {
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: 4,
+    textAlign: 'center',
+  },
+  divider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 18,
+    gap: 10,
+  },
+  divLine: { flex: 1, height: 1, backgroundColor: T.cardBorderStrong },
+  dividerText: { color: T.textDim, fontSize: 12, fontWeight: '600' },
+  hint: {
+    color: T.textDim,
+    fontSize: 12,
+    marginTop: 20,
+    lineHeight: 18,
+    textAlign: 'center',
+  },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 8,
+    paddingTop: 6,
+    paddingBottom: 12,
   },
-  days: { color: '#94a3b8', fontSize: 12, marginTop: 2 },
-  leave: { color: '#f87171', fontWeight: '700' },
-  banner: {
-    marginHorizontal: 16,
-    backgroundColor: '#1e1530',
-    borderRadius: 14,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#3b2d55',
-    marginBottom: 10,
+  headerLeft: { flex: 1 },
+  headerMeta: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 8,
   },
-  sosBanner: { borderColor: '#f87171', backgroundColor: '#2a1218' },
-  bannerTitle: { color: '#f8fafc', fontWeight: '800', marginBottom: 4 },
-  bannerBody: { color: '#94a3b8', lineHeight: 18 },
-  code: { color: '#f472b6', fontWeight: '900', letterSpacing: 1 },
+  leave: { color: T.red, fontWeight: '700', fontSize: 14, paddingTop: 4 },
+  waitBody: { color: T.textSecondary, lineHeight: 20, marginBottom: 8 },
+  inviteCode: {
+    color: T.pink,
+    fontSize: 32,
+    fontWeight: '900',
+    letterSpacing: 4,
+    textAlign: 'center',
+    marginVertical: 12,
+  },
+  heroRow: { flexDirection: 'row', alignItems: 'center' },
+  heroLabel: {
+    color: T.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  heroDist: {
+    color: T.text,
+    fontSize: 36,
+    fontWeight: '900',
+    letterSpacing: -1,
+    marginTop: 2,
+  },
+  heroSub: { color: T.textSecondary, marginTop: 4, fontSize: 13 },
+  heroAvatars: { flexDirection: 'row', alignItems: 'center' },
+  errorInline: { color: T.red, fontSize: 12, marginTop: 10 },
   mapWrap: {
-    height: 260,
-    marginHorizontal: 16,
-    borderRadius: 16,
+    height: 280,
+    borderRadius: T.radiusLg,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: '#2d2438',
+    borderColor: T.cardBorder,
+    marginBottom: 12,
   },
   map: { flex: 1 },
-  distRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    flexWrap: 'wrap',
+  mapOverlay: { position: 'absolute', top: 12, left: 12 },
+  personHead: { flexDirection: 'row', alignItems: 'center' },
+  personName: {
+    color: T.text,
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: -0.3,
   },
-  distValue: { color: '#f8fafc', fontSize: 28, fontWeight: '900' },
-  distLabel: { color: '#94a3b8', marginLeft: 8, fontSize: 14 },
-  bothOnline: { color: '#34d399', fontSize: 13, fontWeight: '700' },
-  card: {
-    marginHorizontal: 16,
-    marginBottom: 12,
-    backgroundColor: '#1a1220',
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#2d2438',
+  personSub: { color: T.textMuted, fontSize: 12, marginTop: 2 },
+  statusLine: {
+    color: T.textSecondary,
+    marginTop: 6,
+    fontSize: 13,
+    fontStyle: 'italic',
   },
-  cardHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  cardTitle: { color: '#f8fafc', fontSize: 16, fontWeight: '800' },
-  dot: { width: 10, height: 10, borderRadius: 5 },
-  meta: { color: '#94a3b8', fontSize: 12, marginTop: 4 },
-  batt: { fontSize: 18, fontWeight: '800', marginTop: 8 },
-  statusLine: { color: '#e2e8f0', marginTop: 8, fontStyle: 'italic' },
-  muted: { color: '#64748b' },
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginTop: 10,
-    marginHorizontal: -4,
-  },
-  tile: {
-    width: '33.33%',
-    paddingHorizontal: 4,
-    paddingVertical: 8,
-  },
-  tileVal: { color: '#f8fafc', fontSize: 13, fontWeight: '800' },
-  tileLbl: { color: '#64748b', fontSize: 10, marginTop: 2 },
-  rowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  muted: { color: T.textMuted, fontSize: 14 },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 },
+  rowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: {
-    borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     borderWidth: 1,
-    borderColor: '#3b2d55',
-    backgroundColor: '#24182e',
+    borderColor: T.cardBorderStrong,
+    backgroundColor: 'rgba(255,255,255,0.03)',
   },
-  chipPink: { backgroundColor: '#f472b633', borderColor: '#f472b6' },
-  chipGhost: { backgroundColor: 'transparent' },
-  chipDanger: { backgroundColor: '#f8717133', borderColor: '#f87171' },
-  chipText: { color: '#f8fafc', fontSize: 13, fontWeight: '600' },
+  chipOn: {
+    backgroundColor: T.pinkSoft,
+    borderColor: 'rgba(244,114,182,0.45)',
+  },
+  chipText: { color: T.text, fontSize: 13, fontWeight: '600' },
   moodBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+    width: 48,
+    height: 48,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#24182e',
+    backgroundColor: 'rgba(255,255,255,0.03)',
     borderWidth: 1,
-    borderColor: '#3b2d55',
+    borderColor: T.cardBorderStrong,
   },
+  actionGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  actionTile: {
+    width: '47%',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: T.cardBorder,
+    paddingVertical: 18,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+  },
+  actionDanger: {
+    borderColor: 'rgba(248,113,113,0.45)',
+    backgroundColor: T.redSoft,
+  },
+  actionEmoji: { fontSize: 26, marginBottom: 8 },
+  actionLbl: {
+    color: T.text,
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  trailRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: T.cardBorder,
+  },
+  trailDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: T.pink,
+    marginTop: 5,
+    marginRight: 10,
+  },
+  trailTitle: { color: T.text, fontWeight: '700', fontSize: 14 },
+  trailMeta: { color: T.textMuted, fontSize: 12, marginTop: 2 },
+  metaLine: { color: T.textSecondary, fontSize: 13, lineHeight: 20 },
   footer: {
-    color: '#475569',
+    color: T.textDim,
     fontSize: 11,
     textAlign: 'center',
     marginTop: 8,
-    marginBottom: 20,
-    lineHeight: 16,
+    marginBottom: 12,
   },
 });
