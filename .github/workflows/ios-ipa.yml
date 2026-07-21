@@ -200,7 +200,7 @@ jobs:
           unzip -l WithYou-Sideloadly.ipa | head -n 20
           cp WithYou-Sideloadly.ipa ../WithYou-Sideloadly.ipa
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: WithYou-ipa-sideloadly
           path: withyou-app/WithYou-Sideloadly.ipa
