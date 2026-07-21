@@ -30,6 +30,31 @@ HOST = os.environ.get("WITHYOU_HOST", "0.0.0.0")
 PORT = int(os.environ.get("WITHYOU_PORT", "9610") or "9610")
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DATA_FILE = DATA_DIR / "pairs.json"
+WEB_DIR = Path(__file__).resolve().parent / "web"
+
+# Static PWA assets (no IPA needed — iPhone: Safari → Share → Add to Home Screen)
+_WEB_MIME = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".webmanifest": "application/manifest+json; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".map": "application/json",
+}
+_WEB_FILES = {
+    "/": "index.html",
+    "/app": "index.html",
+    "/index.html": "index.html",
+    "/app.js": "app.js",
+    "/sw.js": "sw.js",
+    "/manifest.webmanifest": "manifest.webmanifest",
+    "/manifest.json": "manifest.webmanifest",
+    "/icon-192.png": "icon-192.png",
+    "/icon-512.png": "icon-512.png",
+}
 MAX_HISTORY = 40
 HEARTBEAT_STALE_S = 120  # >2 min without beat → offline
 
@@ -209,23 +234,99 @@ class Handler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
 
+    def _serve_web(self, path: str, *, under_withyou: bool = False) -> bool:
+        """Serve PWA static files. Returns True if handled."""
+        key = path if path.startswith("/") else f"/{path}"
+        if key != "/" and key.endswith("/"):
+            key = key.rstrip("/") or "/"
+        # Accept: application/json on / → health for probes / mobile app
+        if key in ("/", "/app"):
+            accept = (self.headers.get("Accept") or "").lower()
+            if "application/json" in accept and "text/html" not in accept:
+                return False
+        rel = _WEB_FILES.get(key)
+        if not rel:
+            name = key.lstrip("/")
+            if name and ".." not in name and "/" not in name:
+                candidate = WEB_DIR / name
+                if candidate.is_file():
+                    rel = name
+        if not rel:
+            return False
+        fpath = WEB_DIR / rel
+        if not fpath.is_file():
+            return False
+        try:
+            data = fpath.read_bytes()
+        except OSError:
+            return False
+        # Fix relative assets when public URL is /withyou (no trailing slash)
+        if rel == "index.html" and under_withyou:
+            base = b'<base href="/withyou/">'
+            data = data.replace(b"<head>", b"<head>\n  " + base, 1)
+        ctype = _WEB_MIME.get(fpath.suffix.lower(), "application/octet-stream")
+        if rel == "sw.js":
+            cache = "no-cache"
+        elif fpath.suffix.lower() in (".png", ".svg", ".ico"):
+            cache = "public, max-age=86400"
+        else:
+            cache = "no-cache"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", cache)
+        if rel == "sw.js":
+            self.send_header(
+                "Service-Worker-Allowed",
+                "/withyou/" if under_withyou else "/",
+            )
+        self.end_headers()
+        self.wfile.write(data)
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path.rstrip("/") or "/"
+        raw_path = urlparse(self.path).path
+        path = raw_path.rstrip("/") or "/"
+        under_withyou = path.startswith("/withyou")
         # Allow both /withyou/* and /* (tunnel strip or not)
-        if path.startswith("/withyou"):
+        if under_withyou:
             path = path[len("/withyou") :] or "/"
 
-        if path in ("/", "/health"):
+        # PWA (browser) — iPhone: Safari → Share → Add to Home Screen
+        if path not in ("/health", "/me", "/partner", "/history"):
+            if self._serve_web(path, under_withyou=under_withyou):
+                return
+
+        if path in ("/health",):
             self._json(
                 200,
                 {
                     "ok": True,
                     "service": "withyou",
                     "version": "1.0.0",
+                    "pwa": True,
                     "time": _now(),
                 },
             )
             return
+
+        # JSON health for API clients that still hit /
+        if path == "/":
+            accept = (self.headers.get("Accept") or "").lower()
+            if "application/json" in accept:
+                self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "service": "withyou",
+                        "version": "1.0.0",
+                        "pwa": True,
+                        "time": _now(),
+                    },
+                )
+                return
 
         if path == "/me":
             auth = self._auth_device()

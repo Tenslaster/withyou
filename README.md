@@ -21,21 +21,20 @@ Separate from **Commander PRO**. Only **two devices** can pair. Data stays on **
 | Piece | Status |
 |--------|--------|
 | API local `:9610` | OK when `server\start.bat` is running |
-| Public `https://crew.kingdom.forum/withyou` | OK (Cloudflare path added) |
+| Public `https://crew.kingdom.forum/withyou` | **PWA + API** (open in Safari on iPhone) |
 | Pair create / join / heartbeat | Smoke-tested |
-| EAS Android APK | **Blocked** — Expo free Android builds used this month (resets ~Aug 1) |
-| EAS iOS IPA | Needs **interactive** Apple credentials (paid Apple Dev for device IPA) |
-| Use now | **Expo Go** on both phones (same Wi‑Fi or public URL) |
+| Android APK | `dist/WithYou.apk` + GitHub Actions `android-apk.yml` |
+| iOS IPA (GitHub) | **Disabled** — kept failing / email spam |
+| **iPhone now** | **PWA**: Safari → Share → Add to Home Screen (see `docs/IPHONE_PWA.md`) |
+| EAS iOS IPA | Needs paid Apple Dev + interactive credentials |
 
-### Build when quota allows
+### iPhone (recommended — free, no IPA)
 
-```bat
-cd withyou-app
-npx eas-cli build -p android --profile apk
-npx eas-cli build -p ios --profile preview
-```
+1. Start the API (`server\start.bat`) + Cloudflare `/withyou`
+2. On iPhone Safari open: **https://crew.kingdom.forum/withyou**
+3. Share → **Add to Home Screen**
 
-Project: https://expo.dev/accounts/tenslaster/projects/withyou
+Full guide: [docs/IPHONE_PWA.md](docs/IPHONE_PWA.md)
 
 ## Run API (Windows)
 

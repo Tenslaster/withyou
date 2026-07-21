@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="theme-color" content="#0f0a12" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="WithYou" />
+  <meta name="description" content="Private couple radar — location, battery, distance" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <link rel="icon" type="image/png" href="icon-192.png" />
+  <title>WithYou</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <style>
+    :root {
+      --bg: #0f0a12;
+      --card: #1a1220;
+      --border: #2d2438;
+      --pink: #f472b6;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --dim: #64748b;
+      --danger: #f87171;
+      --ok: #34d399;
+      --blue: #38bdf8;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100%;
+      -webkit-tap-highlight-color: transparent;
+    }
+    body { padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+    .wrap { max-width: 520px; margin: 0 auto; padding: 16px 16px 48px; }
+    .logo { color: var(--pink); font-size: 2rem; font-weight: 900; letter-spacing: 0.02em; margin: 0; }
+    .logo-sm { color: var(--pink); font-size: 1.25rem; font-weight: 900; margin: 0; }
+    .tag { color: var(--muted); line-height: 1.45; margin: 10px 0 22px; }
+    .label { color: #cbd5e1; font-size: 0.8rem; font-weight: 600; margin: 0 0 6px; display: block; }
+    input, textarea {
+      width: 100%; background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px 14px; color: var(--text); font-size: 1rem;
+      margin-bottom: 12px; outline: none;
+    }
+    input:focus { border-color: var(--pink); }
+    .btn {
+      display: flex; align-items: center; justify-content: center;
+      width: 100%; border: none; border-radius: 12px; padding: 14px;
+      font-weight: 800; font-size: 0.95rem; cursor: pointer;
+    }
+    .btn:disabled { opacity: 0.55; cursor: wait; }
+    .btn-primary { background: var(--pink); color: var(--bg); }
+    .btn-ghost { background: transparent; color: var(--pink); border: 1px solid var(--pink); }
+    .btn-danger { background: transparent; color: var(--danger); border: none; font-weight: 700; width: auto; padding: 8px; }
+    .divider { text-align: center; color: var(--dim); font-size: 0.75rem; margin: 18px 0; }
+    .err { color: var(--danger); margin-top: 10px; font-size: 0.9rem; }
+    .hint { color: #475569; font-size: 0.7rem; margin-top: 22px; line-height: 1.5; word-break: break-all; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .days { color: var(--muted); font-size: 0.75rem; margin-top: 2px; }
+    .banner {
+      background: #1e1530; border: 1px solid #3b2d55; border-radius: 14px;
+      padding: 14px; margin-bottom: 12px;
+    }
+    .banner strong { display: block; margin-bottom: 4px; }
+    .banner .code { color: var(--pink); font-weight: 900; letter-spacing: 0.08em; }
+    #map {
+      height: 260px; border-radius: 16px; border: 1px solid var(--border);
+      overflow: hidden; margin-bottom: 8px; background: #1a1220;
+    }
+    .dist-row { display: flex; align-items: baseline; gap: 8px; padding: 8px 4px 14px; flex-wrap: wrap; }
+    .dist-val { font-size: 1.75rem; font-weight: 900; }
+    .dist-lbl { color: var(--muted); font-size: 0.9rem; }
+    .card {
+      background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+      padding: 14px; margin-bottom: 12px;
+    }
+    .card-head { display: flex; justify-content: space-between; align-items: center; }
+    .card-title { font-weight: 800; font-size: 1rem; margin: 0; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); }
+    .dot.on { background: var(--ok); }
+    .meta { color: var(--muted); font-size: 0.75rem; margin-top: 4px; }
+    .batt { font-size: 1.15rem; font-weight: 800; margin-top: 8px; }
+    .status-line { color: #e2e8f0; margin-top: 8px; font-style: italic; }
+    .muted { color: var(--dim); }
+    .install {
+      background: linear-gradient(135deg, #2a1835, #1a1220);
+      border: 1px solid #4a3060; border-radius: 14px; padding: 14px; margin-bottom: 16px;
+    }
+    .install h3 { margin: 0 0 8px; color: var(--pink); font-size: 0.95rem; }
+    .install ol { margin: 0; padding-left: 1.2rem; color: var(--muted); font-size: 0.85rem; line-height: 1.5; }
+    .boot {
+      min-height: 70vh; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 12px;
+    }
+    .spin {
+      width: 36px; height: 36px; border: 3px solid #3b2d55; border-top-color: var(--pink);
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .hidden { display: none !important; }
+    .leaflet-container { background: #1a1220; font: inherit; }
+  </style>
+</head>
+<body>
+  <div id="boot" class="boot">
+    <div class="spin"></div>
+    <p class="logo-sm">WithYou</p>
+  </div>
+
+  <div id="pair-screen" class="wrap hidden">
+    <h1 class="logo">WithYou</h1>
+    <p class="tag">Private couple radar — location, battery, distance &amp; last seen. Only the two of you.</p>
+
+    <div id="install-tip" class="install hidden">
+      <h3>📱 Install on iPhone (no IPA)</h3>
+      <ol>
+        <li>Open this page in <strong>Safari</strong></li>
+        <li>Tap the <strong>Share</strong> button</li>
+        <li><strong>Add to Home Screen</strong></li>
+        <li>Open the WithYou icon — works like an app</li>
+      </ol>
+    </div>
+
+    <label class="label" for="name">Your name</label>
+    <input id="name" placeholder="e.g. Alex" autocomplete="name" />
+
+    <label class="label" for="emoji">Emoji</label>
+    <input id="emoji" value="💙" maxlength="4" />
+
+    <button type="button" class="btn btn-primary" id="btn-create">Create pair (get invite code)</button>
+    <div class="divider">or join partner</div>
+
+    <label class="label" for="invite">Invite code</label>
+    <input id="invite" placeholder="6-character code" autocomplete="off" style="text-transform:uppercase" />
+
+    <button type="button" class="btn btn-ghost" id="btn-join">Join pair</button>
+    <p id="pair-err" class="err hidden"></p>
+    <p class="hint" id="api-hint"></p>
+  </div>
+
+  <div id="main-screen" class="wrap hidden">
+    <div class="header">
+      <div>
+        <p class="logo-sm">WithYou</p>
+        <p class="days" id="days-line">—</p>
+      </div>
+      <button type="button" class="btn btn-danger" id="btn-leave">Leave</button>
+    </div>
+
+    <div id="wait-banner" class="banner hidden">
+      <strong>Waiting for partner</strong>
+      <span>Share invite code <span class="code" id="invite-code">—</span> so they can join. Only 2 devices.</span>
+    </div>
+
+    <div id="map"></div>
+
+    <div class="dist-row">
+      <span class="dist-val" id="dist-val">—</span>
+      <span class="dist-lbl">apart</span>
+      <span id="main-err" class="err" style="margin:0;font-size:0.75rem"></span>
+    </div>
+
+    <div id="partner-card" class="card"></div>
+    <div id="me-card" class="card"></div>
+
+    <div class="card">
+      <p class="card-title">Your status</p>
+      <input id="mood" placeholder="Mood (happy, tired…)" style="margin-top:10px" />
+      <input id="status-text" placeholder="Status message" />
+      <button type="button" class="btn btn-primary" id="btn-update">Update now</button>
+    </div>
+
+    <p class="hint" id="footer-hint"></p>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="app.js"></script>
+</body>
+</html>

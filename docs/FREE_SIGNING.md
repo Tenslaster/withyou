@@ -1,15 +1,29 @@
 # Sign WithYou **without** a paid Apple Developer account ($99)
 
-## Important distinction
+## Recommended free path (no IPA, no CI emails)
+
+**Use the PWA** — full guide: [IPHONE_PWA.md](./IPHONE_PWA.md)
+
+1. Open **https://crew.kingdom.forum/withyou** in **Safari**
+2. Share → **Add to Home Screen**
+
+No Apple Developer account, no Sideloadly, no GitHub IPA builds.
+
+GitHub **iOS IPA workflow is disabled** (it only failed and emailed you).
+
+---
+
+## Important distinction (if you still want a real IPA)
 
 | What | Cost | Works? |
 |------|------|--------|
+| **PWA (Home Screen)** | Free | **Yes** — use this |
 | **Paid Apple Developer Program** | $99/year | App Store, TestFlight, long-lived certs |
-| **Free Apple ID** (iCloud email) | Free | **Yes** — Sideloadly / SideStore / AltStore re-sign for **7 days**, then re-sign |
+| **Free Apple ID** (iCloud email) | Free | Sideloadly needs an **IPA file first** — free CI could not produce one |
 | **No Apple ID at all** | — | **Cannot** install custom IPA on a normal non-jailbroken iPhone |
 
-Apple does **not** allow permanent custom installs with zero Apple identity.  
-What you *can* do free: use a normal **free Apple ID** (no Developer Program enrollment).
+Apple does **not** allow permanent custom native installs with zero Apple identity.  
+The PWA avoids that problem entirely.
 
 ---
 
