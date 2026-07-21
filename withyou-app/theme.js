@@ -108,7 +108,7 @@ export function SoftPress({
       }}
       style={({ pressed }) => [{ opacity: disabled ? 0.45 : pressed ? 0.92 : 1 }, style]}
     >
-      <Animated.View style={{ transform: [{ scale }] }}>{children}</Animated.View>
+      <Animated.View style={{ transform: [{ scale }], width: '100%' }}>{children}</Animated.View>
     </Pressable>
   );
 }
