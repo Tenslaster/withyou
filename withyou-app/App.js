@@ -17,6 +17,7 @@ import {
   AppState,
   InteractionManager,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   RefreshControl,
   SafeAreaView,
@@ -37,7 +38,6 @@ import * as Cellular from 'expo-cellular';
 import * as Localization from 'expo-localization';
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
-import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
 import {
   T,
   SoftPress,
@@ -54,6 +54,26 @@ import {
   Input,
   hapticSuccess,
 } from './theme';
+
+/**
+ * Native maps crash many Android builds (Google Maps SDK / no API key).
+ * iOS uses Apple Maps via react-native-maps — load it only on iOS.
+ */
+const USE_NATIVE_MAP = Platform.OS === 'ios';
+let MapView = null;
+let Marker = null;
+let Polyline = null;
+if (USE_NATIVE_MAP) {
+  try {
+    // eslint-disable-next-line global-require
+    const maps = require('react-native-maps');
+    MapView = maps.default;
+    Marker = maps.Marker;
+    Polyline = maps.Polyline;
+  } catch {
+    MapView = null;
+  }
+}
 
 // --- Config -----------------------------------------------------------------
 const DEFAULT_API =
@@ -323,6 +343,42 @@ async function fetchWeather(lat, lng) {
     };
   } catch {
     return null;
+  }
+}
+
+function openInMaps(lat, lng, label) {
+  if (lat == null || lng == null) return;
+  const la = Number(lat);
+  const ln = Number(lng);
+  if (Number.isNaN(la) || Number.isNaN(ln)) return;
+  const q = encodeURIComponent(label || 'WithYou');
+  const web = `https://www.google.com/maps/search/?api=1&query=${la},${ln}`;
+  const native =
+    Platform.OS === 'ios'
+      ? `http://maps.apple.com/?ll=${la},${ln}&q=${q}`
+      : `geo:${la},${ln}?q=${la},${ln}(${q})`;
+  Linking.openURL(native).catch(() => {
+    Linking.openURL(web).catch(() => {});
+  });
+}
+
+/** Crash-safe map: iOS native map; Android location card (no Google Maps SDK). */
+class MapBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { crashed: false };
+  }
+  static getDerivedStateFromError() {
+    return { crashed: true };
+  }
+  componentDidCatch(err) {
+    console.warn('[WithYou] map crash', err?.message || err);
+  }
+  render() {
+    if (this.state.crashed) {
+      return this.props.fallback || null;
+    }
+    return this.props.children;
   }
 }
 
@@ -909,8 +965,10 @@ function WithYouApp() {
     }
   };
 
-  // Fit map once when we first have real GPS (never control region every poll)
+  // iOS only: fit native map once when GPS appears
   useEffect(() => {
+    if (!USE_NATIVE_MAP || !MapView) return;
+    if (tab !== 'live') return;
     const pts = [];
     if (me?.lat != null && me?.lng != null) {
       pts.push({ latitude: Number(me.lat), longitude: Number(me.lng) });
@@ -939,7 +997,7 @@ function WithYouApp() {
     } catch {
       /* map not ready */
     }
-  }, [me?.lat, me?.lng, partner?.lat, partner?.lng]);
+  }, [me?.lat, me?.lng, partner?.lat, partner?.lng, tab]);
 
   const trailCoords = useMemo(() => {
     const t = pair?.partner_trail || [];
@@ -1204,69 +1262,16 @@ function WithYouApp() {
           ]}
         />
 
-        {/* Keep Live tab mounted so MapView is not destroyed (smooth + fewer Android crashes) */}
-        <View
-          style={[styles.tabPad, tab !== 'live' && styles.tabHidden]}
-          pointerEvents={tab === 'live' ? 'auto' : 'none'}
-          collapsable={false}
-        >
-            <View style={styles.mapWrap}>
-              <MapView
-                ref={mapRef}
-                style={styles.map}
-                provider={PROVIDER_DEFAULT}
-                initialRegion={initialMapRegion.current}
-                // Do NOT pass controlled `region` — it jumps the map/page every sync
-                rotateEnabled={false}
-                pitchEnabled={false}
-                toolbarEnabled={false}
-                moveOnMarkerPress={false}
-                loadingEnabled
-                loadingIndicatorColor={T.pink}
-                loadingBackgroundColor={T.bg}
-              >
-                {trailCoords.length > 1 ? (
-                  <Polyline
-                    coordinates={trailCoords}
-                    strokeColor="#F472B6AA"
-                    strokeWidth={3}
-                  />
-                ) : null}
-                {me?.lat != null && me?.lng != null ? (
-                  <Marker
-                    coordinate={{
-                      latitude: Number(me.lat),
-                      longitude: Number(me.lng),
-                    }}
-                    title={me.display_name || 'You'}
-                    description={me.place_name || 'You'}
-                    pinColor="#38bdf8"
-                    tracksViewChanges={false}
-                  />
-                ) : null}
-                {partner?.lat != null && partner?.lng != null ? (
-                  <Marker
-                    coordinate={{
-                      latitude: Number(partner.lat),
-                      longitude: Number(partner.lng),
-                    }}
-                    title={partner.display_name || 'Partner'}
-                    description={
-                      partner.place_name ||
-                      (partner.online ? 'Online' : fmtAgo(partner.last_seen))
-                    }
-                    pinColor="#f472b6"
-                    tracksViewChanges={false}
-                  />
-                ) : null}
-              </MapView>
-              <View style={styles.mapOverlay}>
-                <Pill
-                  label={partner?.motion ? motionLabel(partner.motion) : 'Map'}
-                  tone="pink"
-                />
-              </View>
-            </View>
+        {tab === 'live' ? (
+          <View style={styles.tabPad}>
+            <LocationPanel
+              me={me}
+              partner={partner}
+              distanceM={pair?.distance_m}
+              trailCoords={trailCoords}
+              mapRef={mapRef}
+              initialRegion={initialMapRegion.current}
+            />
 
             <PersonHero person={partner} title="Partner" empty="Not joined yet" />
             <PersonHero person={me} title="You" empty="Enable location" tone="blue" />
@@ -1290,7 +1295,8 @@ function WithYouApp() {
                 <Metric label="Notes" value={stats?.love_notes_total ?? 0} icon="✉️" />
               </View>
             </Card>
-        </View>
+          </View>
+        ) : null}
 
         {tab === 'intel' ? (
           <View style={styles.tabPad}>
@@ -1432,6 +1438,126 @@ function WithYouApp() {
         <Text style={styles.footer}>Pull to refresh · Private by design</Text>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+/** Location UI — Android never mounts native MapView (crash fix). */
+function LocationPanel({ me, partner, distanceM, trailCoords, mapRef, initialRegion }) {
+  const locationFallback = (
+    <Card accent="blue" style={{ marginBottom: 12 }}>
+      <SectionLabel>Location</SectionLabel>
+      <Text style={styles.heroDist}>{fmtDist(distanceM)}</Text>
+      <Text style={styles.heroSub}>apart right now</Text>
+      <View style={[styles.grid, { marginTop: 8 }]}>
+        <Metric
+          label="Partner"
+          value={
+            partner?.place_name ||
+            (partner?.lat != null
+              ? `${Number(partner.lat).toFixed(3)}, ${Number(partner.lng).toFixed(3)}`
+              : 'No GPS')
+          }
+        />
+        <Metric
+          label="You"
+          value={
+            me?.place_name ||
+            (me?.lat != null
+              ? `${Number(me.lat).toFixed(3)}, ${Number(me.lng).toFixed(3)}`
+              : 'No GPS')
+          }
+        />
+        <Metric label="Motion" value={motionLabel(partner?.motion)} />
+      </View>
+      <View style={[styles.rowWrap, { marginTop: 12 }]}>
+        {partner?.lat != null ? (
+          <SoftPress
+            style={styles.chip}
+            onPress={() =>
+              openInMaps(partner.lat, partner.lng, partner.display_name || 'Partner')
+            }
+          >
+            <Text style={styles.chipText}>Open partner in Maps</Text>
+          </SoftPress>
+        ) : null}
+        {me?.lat != null ? (
+          <SoftPress
+            style={styles.chip}
+            onPress={() => openInMaps(me.lat, me.lng, me.display_name || 'Me')}
+          >
+            <Text style={styles.chipText}>Open me in Maps</Text>
+          </SoftPress>
+        ) : null}
+      </View>
+      {Platform.OS === 'android' ? (
+        <Text style={[styles.metaLine, { marginTop: 10 }]}>
+          Built-in map is off on Android for stability. Use the buttons to open Google Maps.
+        </Text>
+      ) : null}
+    </Card>
+  );
+
+  // Android / missing native maps: never create MapView
+  if (!USE_NATIVE_MAP || !MapView) {
+    return locationFallback;
+  }
+
+  return (
+    <MapBoundary fallback={locationFallback}>
+      <View style={styles.mapWrap}>
+        <MapView
+          ref={mapRef}
+          style={styles.map}
+          initialRegion={initialRegion}
+          rotateEnabled={false}
+          pitchEnabled={false}
+          toolbarEnabled={false}
+          moveOnMarkerPress={false}
+          loadingEnabled={false}
+        >
+          {Polyline && trailCoords.length > 1 ? (
+            <Polyline
+              coordinates={trailCoords}
+              strokeColor="#F472B6AA"
+              strokeWidth={3}
+            />
+          ) : null}
+          {Marker && me?.lat != null && me?.lng != null ? (
+            <Marker
+              coordinate={{
+                latitude: Number(me.lat),
+                longitude: Number(me.lng),
+              }}
+              title={me.display_name || 'You'}
+              description={me.place_name || 'You'}
+              pinColor="#38bdf8"
+              tracksViewChanges={false}
+            />
+          ) : null}
+          {Marker && partner?.lat != null && partner?.lng != null ? (
+            <Marker
+              coordinate={{
+                latitude: Number(partner.lat),
+                longitude: Number(partner.lng),
+              }}
+              title={partner.display_name || 'Partner'}
+              description={
+                partner.place_name ||
+                (partner.online ? 'Online' : fmtAgo(partner.last_seen))
+              }
+              pinColor="#f472b6"
+              tracksViewChanges={false}
+            />
+          ) : null}
+        </MapView>
+        <View style={styles.mapOverlay}>
+          <Pill
+            label={partner?.motion ? motionLabel(partner.motion) : 'Map'}
+            tone="pink"
+          />
+        </View>
+      </View>
+    </MapBoundary>
   );
 }
 
@@ -1654,16 +1780,6 @@ const styles = StyleSheet.create({
   pad: { padding: 20, paddingTop: 28, paddingBottom: 48 },
   padBottom: { paddingBottom: 48 },
   tabPad: { paddingHorizontal: 16 },
-  tabHidden: {
-    // Keep map mounted off-screen without layout thrash
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    opacity: 0,
-    zIndex: -1,
-    height: 1,
-    overflow: 'hidden',
-  },
   mx: { marginHorizontal: 16 },
   pairHero: { alignItems: 'center', marginBottom: 28, marginTop: 12 },
   logo: {
