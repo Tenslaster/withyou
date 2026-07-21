@@ -1,10 +1,12 @@
 # Real device IPA for Sideloadly (free Apple ID re-sign on your PC).
 #
-# DIFFERENT from the old approach:
-#   - pre-builds ExpoModulesJSI (that script phase was the old failure)
-#   - uses `xcodebuild build` (not archive)
-#   - CODE_SIGNING_ALLOWED=NO only on the app target (not every Pod)
-#   - packs Payload/*.app → WithYou.ipa for Sideloadly
+# Expo SDK 57 / expo-modules-jsi needs Swift 6.2+ (`weak let`, tools-version 6.2).
+# That requires Xcode 26.x → GitHub runner macos-26 (NOT macos-15 / Xcode 16.4).
+#
+# Build path:
+#   - prebuild ExpoModulesJSI for iphoneos
+#   - xcodebuild build (not archive) unsigned
+#   - pack Payload → WithYou-Sideloadly.ipa
 #
 # MANUAL ONLY (workflow_dispatch) — no push spam / failure emails.
 
@@ -15,7 +17,7 @@ on:
 
 jobs:
   build-ipa:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 120
     defaults:
       run:
@@ -30,17 +32,18 @@ jobs:
           cache: npm
           cache-dependency-path: withyou-app/package-lock.json
 
-      - name: Select newest Xcode + show toolchain
+      - name: Select Xcode 26.6 (Swift 6.2+ for ExpoModulesJSI)
         run: |
           set -euo pipefail
           echo "Available Xcodes:"
-          ls /Applications | grep -i xcode || true
-          # Prefer newest installed Xcode (ExpoModulesJSI needs Swift tools >= package requirement)
-          if [ -d /Applications/Xcode_16.4.app ]; then
-            sudo xcode-select -s /Applications/Xcode_16.4.app
-          elif [ -d /Applications/Xcode.app ]; then
-            sudo xcode-select -s /Applications/Xcode.app
-          fi
+          ls /Applications | grep -i Xcode || true
+          # Prefer 26.6, then 26.5, then 26.4.1
+          for app in Xcode_26.6.app Xcode_26.5.app Xcode_26.4.1.app Xcode.app; do
+            if [ -d "/Applications/$app" ]; then
+              sudo xcode-select -s "/Applications/$app"
+              break
+            fi
+          done
           xcodebuild -version
           xcrun swift --version
           xcode-select -p
@@ -59,18 +62,9 @@ jobs:
           pod install --repo-update
           ls -la
 
-      - name: Patch ExpoModulesJSI Swift tools version for runner Xcode
+      - name: Un-quiet ExpoModulesJSI nested xcodebuild (better CI logs)
         working-directory: withyou-app
         run: |
-          set -euo pipefail
-          # package requires swift-tools-version 6.2; GH macos-15 often ships Swift 6.1
-          # Lower the tools version so SPM can resolve; source still builds on 6.1.
-          PKG="node_modules/expo-modules-jsi/apple/Package.swift"
-          if [ -f "$PKG" ]; then
-            sed -i.bak 's/swift-tools-version: 6\.2/swift-tools-version: 6.1/' "$PKG"
-            head -n 5 "$PKG"
-          fi
-          # Also clear -quiet on nested xcodebuild so errors are visible if rebuilt mid-pod
           SCRIPT="node_modules/expo-modules-jsi/apple/scripts/build-xcframework.sh"
           if [ -f "$SCRIPT" ]; then
             sed -i.bak 's/ -quiet \\/ \\/' "$SCRIPT" || true
@@ -89,9 +83,9 @@ jobs:
           export PODS_ROOT="$PWD/ios/Pods"
           export PLATFORM_NAME=iphoneos
           export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
-          # Resolve RN_ROOT for Package.swift header paths
           export RN_ROOT="$(node -p "require('path').dirname(require.resolve('react-native/package.json'))")"
-          echo "RN_ROOT=$RN_ROOT"
+          export DEVELOPER_DIR="$(xcode-select -p)"
+          echo "RN_ROOT=$RN_ROOT DEVELOPER_DIR=$DEVELOPER_DIR"
           chmod +x "$JSI_DIR/scripts/"*.sh
 
           set +e
@@ -99,11 +93,11 @@ jobs:
           JSI_XC=${PIPESTATUS[0]}
           set -e
           echo "jsi script exit=$JSI_XC"
-          tail -n 60 /tmp/jsi-build.log || true
+          tail -n 80 /tmp/jsi-build.log || true
 
           if [ "$JSI_XC" -ne 0 ]; then
             echo "ExpoModulesJSI build failed"
-            grep -E "error:|fatal|Swift tools|Could not resolve" /tmp/jsi-build.log | tail -n 40 || true
+            grep -E "error:|fatal|Swift tools|Could not resolve|Supported platforms|did not produce" /tmp/jsi-build.log | tail -n 50 || true
             exit "$JSI_XC"
           fi
 
@@ -127,17 +121,15 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
+          import re
           p = Path("WithYou.xcodeproj/project.pbxproj")
           t = p.read_text()
-          # Force no-sign for the app project so CI can produce a binary without Apple team
           replacements = {
               "CODE_SIGN_STYLE = Automatic;": "CODE_SIGN_STYLE = Manual;\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;\n\t\t\t\tCODE_SIGN_IDENTITY = \"\";\n\t\t\t\tDEVELOPMENT_TEAM = \"\";",
           }
           for a, b in replacements.items():
               if a in t:
                   t = t.replace(a, b)
-          # Also blanket DEVELOPMENT_TEAM empty if present
-          import re
           t = re.sub(r"DEVELOPMENT_TEAM = [^;]+;", 'DEVELOPMENT_TEAM = "";', t)
           p.write_text(t)
           print("Patched project.pbxproj for unsigned device build")
@@ -178,7 +170,7 @@ jobs:
           if [ "$XC" -ne 0 ]; then
             echo "==== errors ===="
             grep -E "error:|❌|fatal|FAILED" /tmp/xcodebuild.log | tail -n 80 || true
-            echo "==== ExpoModulesJSI script snippets ===="
+            echo "==== ExpoModulesJSI snippets ===="
             grep -A5 -B5 "ExpoModulesJSI" /tmp/xcodebuild.log | tail -n 80 || true
             exit "$XC"
           fi
@@ -190,7 +182,6 @@ jobs:
             find "$DERIVED/Build/Products" -maxdepth 4 -type d 2>/dev/null || true
             exit 1
           fi
-          echo "APP=$APP" >> "$GITHUB_ENV"
           du -sh "$APP"
           ls -la "$APP" | head -n 30
 
@@ -203,11 +194,9 @@ jobs:
           rm -rf build/Payload WithYou.ipa
           mkdir -p build/Payload
           cp -R "$APP" build/Payload/
-          # Sideloadly accepts standard zip-as-ipa
           (cd build && zip -qry ../WithYou-Sideloadly.ipa Payload)
           ls -lh WithYou-Sideloadly.ipa
           file WithYou-Sideloadly.ipa
-          # sanity: unzip -l should show Payload/*.app
           unzip -l WithYou-Sideloadly.ipa | head -n 20
           cp WithYou-Sideloadly.ipa ../WithYou-Sideloadly.ipa
 
