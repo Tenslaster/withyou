@@ -1,6 +1,6 @@
 /**
- * WithYou — private couple presence (Love8-style, richer live status)
- * Mutual location · battery · distance · last seen · mood
+ * WithYou — private couple presence + deep partner intel
+ * Live location · battery · motion · place · weather · care · SOS · stats
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -25,8 +25,11 @@ import * as Battery from 'expo-battery';
 import * as SecureStore from 'expo-secure-store';
 import * as Device from 'expo-device';
 import * as Network from 'expo-network';
+import * as Cellular from 'expo-cellular';
+import * as Localization from 'expo-localization';
+import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
-import MapView, { Marker, PROVIDER_DEFAULT } from 'react-native-maps';
+import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
 
 // --- Config -----------------------------------------------------------------
 const DEFAULT_API =
@@ -40,6 +43,45 @@ const NAME_KEY = 'withyou_name_v1';
 const APP_VERSION = Constants.expoConfig?.version || '1.0.0';
 const POLL_MS = 12000;
 const HEARTBEAT_MS = 20000;
+
+const ACTIVITIES = [
+  { id: 'home', label: '🏠 Home' },
+  { id: 'work', label: '💼 Work' },
+  { id: 'gym', label: '🏋️ Gym' },
+  { id: 'sleep', label: '😴 Sleep' },
+  { id: 'out', label: '🚗 Out' },
+  { id: 'food', label: '🍽️ Food' },
+  { id: 'travel', label: '✈️ Travel' },
+  { id: 'study', label: '📚 Study' },
+];
+
+const MOODS = ['😊', '🥰', '😌', '😢', '😤', '🤒', '🥱', '🥳', '😰', '😎'];
+
+const WMO = {
+  0: 'Clear',
+  1: 'Mostly clear',
+  2: 'Partly cloudy',
+  3: 'Overcast',
+  45: 'Fog',
+  48: 'Fog',
+  51: 'Drizzle',
+  61: 'Rain',
+  63: 'Rain',
+  65: 'Heavy rain',
+  71: 'Snow',
+  80: 'Showers',
+  95: 'Thunder',
+};
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
 
 /** Invite codes are 6 hex chars (A–F, 0–9). Strip junk users often paste. */
 function cleanInviteCode(raw) {
@@ -95,12 +137,65 @@ function fmtAgo(ts) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+function fmtDuration(sec) {
+  if (sec == null || Number.isNaN(sec)) return '—';
+  const s = Math.max(0, Math.floor(sec));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
 function batteryColor(pct, charging) {
   if (charging) return '#34d399';
   if (pct == null) return '#94a3b8';
   if (pct <= 15) return '#f87171';
   if (pct <= 30) return '#fbbf24';
   return '#38bdf8';
+}
+
+function motionLabel(m) {
+  const map = {
+    still: 'Still',
+    walking: 'Walking',
+    running_or_bike: 'Running / bike',
+    driving: 'Driving',
+    unknown: 'Unknown',
+  };
+  return map[m] || m || '—';
+}
+
+function headingCardinal(deg) {
+  if (deg == null || Number.isNaN(Number(deg))) return '';
+  const d = ((Number(deg) % 360) + 360) % 360;
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  return dirs[Math.floor((d + 22.5) / 45) % 8];
+}
+
+function weatherLabel(code) {
+  if (code == null) return '';
+  return WMO[code] || WMO[Math.floor(code / 10) * 10] || `Code ${code}`;
+}
+
+async function fetchWeather(lat, lng) {
+  try {
+    const url =
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}` +
+      `&current=temperature_2m,weather_code&timezone=auto`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const j = await res.json();
+    const cur = j?.current;
+    if (!cur) return null;
+    return {
+      weather_temp_c: cur.temperature_2m,
+      weather_code: cur.weather_code,
+      weather_label: weatherLabel(cur.weather_code),
+    };
+  } catch {
+    return null;
+  }
 }
 
 // --- App --------------------------------------------------------------------
@@ -116,13 +211,17 @@ export default function App() {
   const [err, setErr] = useState('');
   const [mood, setMood] = useState('');
   const [statusText, setStatusText] = useState('');
+  const [activity, setActivity] = useState('');
+  const [loveDraft, setLoveDraft] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const mapRef = useRef(null);
   const tokenRef = useRef(null);
+  const weatherCache = useRef({ at: 0, data: null, key: '' });
   tokenRef.current = token;
 
   const partner = pair?.partner;
   const me = pair?.me;
+  const stats = pair?.stats;
 
   // Boot session
   useEffect(() => {
@@ -140,6 +239,7 @@ export default function App() {
             setPair(data);
             if (data?.me?.mood) setMood(data.me.mood);
             if (data?.me?.status_text) setStatusText(data.me.status_text);
+            if (data?.me?.activity) setActivity(data.me.activity);
           } catch {
             await SecureStore.deleteItemAsync(TOKEN_KEY);
             setToken(null);
@@ -151,12 +251,62 @@ export default function App() {
     })();
   }, []);
 
+  // Push notifications registration
+  useEffect(() => {
+    if (!token) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { status: existing } = await Notifications.getPermissionsAsync();
+        let final = existing;
+        if (existing !== 'granted') {
+          const req = await Notifications.requestPermissionsAsync();
+          final = req.status;
+        }
+        if (final !== 'granted' || cancelled) return;
+        const projectId =
+          Constants.expoConfig?.extra?.eas?.projectId ||
+          Constants.easConfig?.projectId;
+        const push = await Notifications.getExpoPushTokenAsync(
+          projectId ? { projectId } : undefined
+        );
+        if (push?.data && !cancelled) {
+          await api('/push-token', {
+            method: 'POST',
+            token,
+            body: { push_token: push.data },
+          });
+        }
+      } catch {
+        /* optional on simulators / missing FCM */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
   const collectTelemetry = useCallback(async () => {
+    const locales = Localization.getLocales?.() || [];
+    const calendars = Localization.getCalendars?.() || [];
+    const tz = calendars[0]?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    const locale = locales[0]?.languageTag || '';
+    const hour = new Date().getHours();
     const body = {
       platform: Platform.OS,
       app_version: APP_VERSION,
       mood: mood || undefined,
       status_text: statusText || undefined,
+      activity: activity || undefined,
+      device_model: Device.modelName || Device.modelId || '',
+      device_brand: Device.brand || '',
+      os_name: Device.osName || Platform.OS,
+      os_version: Device.osVersion || '',
+      timezone: tz,
+      locale,
+      app_state: AppState.currentState || 'active',
+      local_hour: hour,
+      day_night: hour >= 6 && hour < 20 ? 'day' : 'night',
     };
     try {
       const level = await Battery.getBatteryLevelAsync();
@@ -171,13 +321,28 @@ export default function App() {
         /* optional */
       }
     } catch {
-      /* battery optional in simulator */
+      /* battery optional */
     }
     try {
       const net = await Network.getNetworkStateAsync();
       body.network = net.type || (net.isConnected ? 'online' : 'offline');
+      body.is_internet = !!net.isConnected && net.isInternetReachable !== false;
+      body.is_wifi = String(net.type || '').toLowerCase().includes('wifi');
     } catch {
       /* ignore */
+    }
+    try {
+      const gen = await Cellular.getCellularGenerationAsync();
+      const map = {
+        [Cellular.CellularGeneration.CELLULAR_2G]: '2G',
+        [Cellular.CellularGeneration.CELLULAR_3G]: '3G',
+        [Cellular.CellularGeneration.CELLULAR_4G]: '4G',
+        [Cellular.CellularGeneration.CELLULAR_5G]: '5G',
+      };
+      body.cellular_gen = map[gen] || '';
+      body.carrier = (await Cellular.getCarrierNameAsync()) || '';
+    } catch {
+      /* optional */
     }
     try {
       const { status } = await Location.getForegroundPermissionsAsync();
@@ -190,17 +355,57 @@ export default function App() {
         body.accuracy_m = loc.coords.accuracy;
         if (loc.coords.speed != null && loc.coords.speed >= 0) {
           body.speed_mps = loc.coords.speed;
+          if (loc.coords.speed < 0.4) body.motion = 'still';
+          else if (loc.coords.speed < 2) body.motion = 'walking';
+          else if (loc.coords.speed < 8) body.motion = 'running_or_bike';
+          else body.motion = 'driving';
         }
         if (loc.coords.heading != null && loc.coords.heading >= 0) {
           body.heading = loc.coords.heading;
+          body.heading_cardinal = headingCardinal(loc.coords.heading);
         }
         if (loc.coords.altitude != null) body.altitude_m = loc.coords.altitude;
+
+        // reverse geocode
+        try {
+          const places = await Location.reverseGeocodeAsync({
+            latitude: body.lat,
+            longitude: body.lng,
+          });
+          const p = places?.[0];
+          if (p) {
+            body.place_name =
+              p.name || p.street || p.district || p.city || p.subregion || '';
+            body.place_city = p.city || p.subregion || '';
+            body.place_region = p.region || '';
+            body.place_country = p.country || '';
+          }
+        } catch {
+          /* geocode optional */
+        }
+
+        // weather (cached ~10 min)
+        const wkey = `${body.lat.toFixed(2)},${body.lng.toFixed(2)}`;
+        const now = Date.now();
+        if (
+          weatherCache.current.key === wkey &&
+          now - weatherCache.current.at < 10 * 60 * 1000 &&
+          weatherCache.current.data
+        ) {
+          Object.assign(body, weatherCache.current.data);
+        } else {
+          const w = await fetchWeather(body.lat, body.lng);
+          if (w) {
+            weatherCache.current = { at: now, data: w, key: wkey };
+            Object.assign(body, w);
+          }
+        }
       }
     } catch {
       /* location denied */
     }
     return body;
-  }, [mood, statusText]);
+  }, [mood, statusText, activity]);
 
   const heartbeat = useCallback(async () => {
     const t = tokenRef.current;
@@ -238,11 +443,10 @@ export default function App() {
       try {
         const fg = await Location.requestForegroundPermissionsAsync();
         if (fg.status === 'granted') {
-          // Best-effort background (works better on standalone APK/IPA)
           try {
             await Location.requestBackgroundPermissionsAsync();
           } catch {
-            /* Expo Go may limit this */
+            /* Expo Go may limit */
           }
         }
       } catch {
@@ -296,7 +500,6 @@ export default function App() {
         distance_m: null,
         partner_joined: false,
       });
-      // Prompt to share code with partner
       const code = data.invite_code;
       Alert.alert(
         'Invite code ready',
@@ -321,7 +524,6 @@ export default function App() {
   };
 
   const joinPair = async () => {
-    // Name is optional — only the invite code is required to join
     const n = (name || '').trim() || 'Partner';
     const code = cleanInviteCode(inviteInput);
     if (!code || code.length < 4) {
@@ -376,7 +578,7 @@ export default function App() {
           try {
             if (token) await api('/pair/leave', { method: 'POST', token, body: {} });
           } catch {
-            /* ignore */
+            /* still clear local */
           }
           await SecureStore.deleteItemAsync(TOKEN_KEY);
           setToken(null);
@@ -387,25 +589,126 @@ export default function App() {
     ]);
   };
 
+  const sendLoveNote = async () => {
+    const note = (loveDraft || '').trim();
+    if (!note) {
+      Alert.alert('Love note', 'Type a short message first.');
+      return;
+    }
+    try {
+      const data = await api('/care/note', {
+        method: 'POST',
+        token,
+        body: { note },
+      });
+      setPair(data);
+      setLoveDraft('');
+      Alert.alert('Sent 💕', 'Your partner will see this note.');
+    } catch (e) {
+      Alert.alert('Failed', e.message || 'Could not send');
+    }
+  };
+
+  const sendPing = async () => {
+    try {
+      const data = await api('/care/ping', { method: 'POST', token, body: {} });
+      setPair(data);
+      Alert.alert('Sent 💗', 'Thinking of you — partner notified.');
+    } catch (e) {
+      Alert.alert('Failed', e.message || 'Could not ping');
+    }
+  };
+
+  const toggleSos = async () => {
+    const active = !me?.sos_active;
+    if (active) {
+      Alert.alert('Send SOS?', 'Partner gets an urgent alert.', [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Send SOS',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const data = await api('/care/sos', {
+                method: 'POST',
+                token,
+                body: { active: true, message: 'I need you — please check on me' },
+              });
+              setPair(data);
+            } catch (e) {
+              Alert.alert('Failed', e.message);
+            }
+          },
+        },
+      ]);
+    } else {
+      try {
+        const data = await api('/care/sos', {
+          method: 'POST',
+          token,
+          body: { active: false },
+        });
+        setPair(data);
+      } catch (e) {
+        Alert.alert('Failed', e.message);
+      }
+    }
+  };
+
+  const setHomeHere = async () => {
+    try {
+      const data = await api('/home', {
+        method: 'POST',
+        token,
+        body: { lat: me?.lat, lng: me?.lng },
+      });
+      setPair(data);
+      Alert.alert('Home saved', 'Partner can see when you are at home.');
+      heartbeat();
+    } catch (e) {
+      Alert.alert('Failed', e.message || 'Need GPS first');
+    }
+  };
+
+  const pickActivity = async (id) => {
+    setActivity(id);
+    try {
+      const data = await api('/care/activity', {
+        method: 'POST',
+        token,
+        body: { activity: id },
+      });
+      setPair(data);
+      heartbeat();
+    } catch {
+      /* heartbeat will sync */
+    }
+  };
+
   const region = useMemo(() => {
     const pts = [];
-    if (me?.lat != null && me?.lng != null) pts.push({ lat: me.lat, lng: me.lng });
+    if (me?.lat != null && me?.lng != null) pts.push({ latitude: me.lat, longitude: me.lng });
     if (partner?.lat != null && partner?.lng != null) {
-      pts.push({ lat: partner.lat, lng: partner.lng });
+      pts.push({ latitude: partner.lat, longitude: partner.lng });
     }
     if (!pts.length) {
-      return { latitude: 48.8566, longitude: 2.3522, latitudeDelta: 0.08, longitudeDelta: 0.08 };
+      return {
+        latitude: 45.5,
+        longitude: -73.6,
+        latitudeDelta: 0.08,
+        longitudeDelta: 0.08,
+      };
     }
     if (pts.length === 1) {
       return {
-        latitude: pts[0].lat,
-        longitude: pts[0].lng,
-        latitudeDelta: 0.04,
-        longitudeDelta: 0.04,
+        latitude: pts[0].latitude,
+        longitude: pts[0].longitude,
+        latitudeDelta: 0.02,
+        longitudeDelta: 0.02,
       };
     }
-    const lats = pts.map((p) => p.lat);
-    const lngs = pts.map((p) => p.lng);
+    const lats = pts.map((p) => p.latitude);
+    const lngs = pts.map((p) => p.longitude);
     const minLat = Math.min(...lats);
     const maxLat = Math.max(...lats);
     const minLng = Math.min(...lngs);
@@ -413,18 +716,25 @@ export default function App() {
     return {
       latitude: (minLat + maxLat) / 2,
       longitude: (minLng + maxLng) / 2,
-      latitudeDelta: Math.max(0.02, (maxLat - minLat) * 2.2),
-      longitudeDelta: Math.max(0.02, (maxLng - minLng) * 2.2),
+      latitudeDelta: Math.max(0.02, (maxLat - minLat) * 1.8),
+      longitudeDelta: Math.max(0.02, (maxLng - minLng) * 1.8),
     };
   }, [me?.lat, me?.lng, partner?.lat, partner?.lng]);
 
+  const trailCoords = useMemo(() => {
+    const t = pair?.partner_trail || [];
+    return t
+      .filter((h) => h.lat != null && h.lng != null)
+      .map((h) => ({ latitude: h.lat, longitude: h.lng }));
+  }, [pair?.partner_trail]);
+
   if (boot) {
     return (
-      <View style={styles.boot}>
-        <ActivityIndicator color="#f472b6" size="large" />
-        <Text style={styles.bootText}>WithYou</Text>
+      <SafeAreaView style={styles.boot}>
         <StatusBar style="light" />
-      </View>
+        <ActivityIndicator size="large" color="#f472b6" />
+        <Text style={styles.bootText}>WithYou</Text>
+      </SafeAreaView>
     );
   }
 
@@ -444,7 +754,7 @@ export default function App() {
             <Text style={styles.logo}>WithYou</Text>
             <Text style={styles.tagline}>
               One of you creates a pair and gets a code. The other only needs
-              that code to join.
+              that code to join — then you see live partner intel.
             </Text>
             <Text style={styles.label}>Invite code (to join)</Text>
             <TextInput
@@ -497,7 +807,7 @@ export default function App() {
             <Text style={styles.hint}>
               How to pair:{'\n'}
               • Phone A: Create pair → share the 6-char code{'\n'}
-              • Phone B: paste code → Join pair (name optional){'\n'}
+              • Phone B: paste code → Join pair{'\n'}
               {'\n'}
               API: {API_URL}
             </Text>
@@ -532,12 +842,39 @@ export default function App() {
           </Pressable>
         </View>
 
+        {partner?.sos_active ? (
+          <View style={[styles.banner, styles.sosBanner]}>
+            <Text style={styles.bannerTitle}>🚨 PARTNER SOS</Text>
+            <Text style={styles.bannerBody}>
+              {partner.sos_message || 'Needs you'} · {fmtAgo(partner.sos_at)}
+            </Text>
+          </View>
+        ) : null}
+
+        {me?.love_note ? (
+          <View style={styles.banner}>
+            <Text style={styles.bannerTitle}>
+              💕 Note from {me.love_note_from || 'partner'}
+            </Text>
+            <Text style={styles.bannerBody}>{me.love_note}</Text>
+            <Text style={styles.meta}>{fmtAgo(me.love_note_at)}</Text>
+          </View>
+        ) : null}
+
+        {me?.thinking_of_you_at ? (
+          <View style={[styles.banner, { borderColor: '#f472b6' }]}>
+            <Text style={styles.bannerTitle}>💗 Thinking of you</Text>
+            <Text style={styles.bannerBody}>
+              Partner pinged you {fmtAgo(me.thinking_of_you_at)}
+            </Text>
+          </View>
+        ) : null}
+
         {!pair?.partner_joined && !partner ? (
           <View style={styles.banner}>
             <Text style={styles.bannerTitle}>Waiting for partner</Text>
             <Text style={styles.bannerBody}>
-              Share this code with your partner. They open WithYou, type{' '}
-              <Text style={styles.code}>their name</Text> + this code, then Join.
+              Share this code. They only need the code to Join.
             </Text>
             <Text style={[styles.code, { fontSize: 28, marginTop: 10, textAlign: 'center' }]}>
               {createdInvite || pair?.invite_code || '—'}
@@ -567,11 +904,14 @@ export default function App() {
             region={region}
             userInterfaceStyle="dark"
           >
+            {trailCoords.length > 1 ? (
+              <Polyline coordinates={trailCoords} strokeColor="#f472b688" strokeWidth={3} />
+            ) : null}
             {me?.lat != null && me?.lng != null ? (
               <Marker
                 coordinate={{ latitude: me.lat, longitude: me.lng }}
                 title={me.display_name || 'You'}
-                description="You"
+                description={me.place_name || 'You'}
                 pinColor="#38bdf8"
               />
             ) : null}
@@ -579,40 +919,111 @@ export default function App() {
               <Marker
                 coordinate={{ latitude: partner.lat, longitude: partner.lng }}
                 title={partner.display_name || 'Partner'}
-                description={partner.online ? 'Online' : fmtAgo(partner.last_seen)}
+                description={
+                  partner.place_name ||
+                  (partner.online ? 'Online' : fmtAgo(partner.last_seen))
+                }
                 pinColor="#f472b6"
               />
             ) : null}
           </MapView>
         </View>
 
-        {/* Distance strip */}
         <View style={styles.distRow}>
           <Text style={styles.distValue}>{fmtDist(pair?.distance_m)}</Text>
           <Text style={styles.distLabel}>apart</Text>
+          {stats?.both_online ? (
+            <Text style={styles.bothOnline}> · both online</Text>
+          ) : null}
           {!!err && <Text style={styles.errorInline}>{err}</Text>}
         </View>
 
-        {/* Partner card */}
-        <PersonCard
-          title="Partner"
-          person={partner}
-          emptyHint="Not joined yet"
-        />
-        <PersonCard title="You" person={me} emptyHint="Share location to appear" />
+        {/* Partner deep intel — 20+ signals */}
+        <PersonIntel title="Partner" person={partner} emptyHint="Not joined yet" />
+        <PersonIntel title="You" person={me} emptyHint="Share location to appear" />
 
-        {/* Mood / status */}
+        {/* Couple stats */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Your status</Text>
+          <Text style={styles.cardTitle}>Couple stats</Text>
+          <View style={styles.grid}>
+            <IntelTile label="Days together" value={pair?.days_together ?? '—'} />
+            <IntelTile label="Now apart" value={fmtDist(pair?.distance_m)} />
+            <IntelTile label="Max apart today" value={fmtDist(stats?.max_distance_m_today)} />
+            <IntelTile label="Closest today" value={fmtDist(stats?.min_distance_m_today)} />
+            <IntelTile label="Care pings" value={stats?.care_pings_total ?? 0} />
+            <IntelTile label="Love notes" value={stats?.love_notes_total ?? 0} />
+            <IntelTile
+              label="Partner traveled"
+              value={
+                partner?.traveled_m_today != null
+                  ? fmtDist(partner.traveled_m_today)
+                  : '—'
+              }
+            />
+            <IntelTile label="Partner places" value={partner?.places_today ?? '—'} />
+          </View>
+        </View>
+
+        {/* Care actions */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Care</Text>
+          <View style={styles.rowWrap}>
+            <Pressable style={[styles.chip, styles.chipPink]} onPress={sendPing}>
+              <Text style={styles.chipText}>💗 Thinking of you</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.chip, me?.sos_active ? styles.chipDanger : styles.chipGhost]}
+              onPress={toggleSos}
+            >
+              <Text style={styles.chipText}>
+                {me?.sos_active ? '✅ Clear SOS' : '🚨 SOS'}
+              </Text>
+            </Pressable>
+            <Pressable style={[styles.chip, styles.chipGhost]} onPress={setHomeHere}>
+              <Text style={styles.chipText}>🏠 Set home here</Text>
+            </Pressable>
+          </View>
           <TextInput
-            style={styles.input}
-            placeholder="Mood (happy, tired…)"
+            style={[styles.input, { marginTop: 10, marginBottom: 8 }]}
+            placeholder="Love note to partner…"
             placeholderTextColor="#64748b"
-            value={mood}
-            onChangeText={setMood}
+            value={loveDraft}
+            onChangeText={setLoveDraft}
+            maxLength={280}
           />
+          <Pressable style={[styles.btn, styles.btnPrimary]} onPress={sendLoveNote}>
+            <Text style={styles.btnPrimaryText}>Send love note</Text>
+          </Pressable>
+        </View>
+
+        {/* Activity + mood */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Your activity</Text>
+          <View style={styles.rowWrap}>
+            {ACTIVITIES.map((a) => (
+              <Pressable
+                key={a.id}
+                style={[styles.chip, activity === a.id && styles.chipPink]}
+                onPress={() => pickActivity(a.id)}
+              >
+                <Text style={styles.chipText}>{a.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <Text style={[styles.cardTitle, { marginTop: 14 }]}>Mood</Text>
+          <View style={styles.rowWrap}>
+            {MOODS.map((m) => (
+              <Pressable
+                key={m}
+                style={[styles.moodBtn, mood === m && styles.chipPink]}
+                onPress={() => setMood(m)}
+              >
+                <Text style={{ fontSize: 22 }}>{m}</Text>
+              </Pressable>
+            ))}
+          </View>
           <TextInput
-            style={[styles.input, { marginTop: 8 }]}
+            style={[styles.input, { marginTop: 10 }]}
             placeholder="Status message"
             placeholderTextColor="#64748b"
             value={statusText}
@@ -623,17 +1034,42 @@ export default function App() {
           </Pressable>
         </View>
 
+        {/* Trail list */}
+        {pair?.partner_trail?.length ? (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Partner trail</Text>
+            {[...pair.partner_trail].reverse().slice(0, 8).map((h, i) => (
+              <Text key={`${h.ts}-${i}`} style={styles.meta}>
+                {fmtAgo(h.ts)}
+                {h.place_name ? ` · ${h.place_name}` : ''}
+                {h.battery != null ? ` · 🔋${Math.round(h.battery)}%` : ''}
+              </Text>
+            ))}
+          </View>
+        ) : null}
+
         <Text style={styles.footer}>
-          Device {Device.modelName || Platform.OS} · v{APP_VERSION}
+          {Device.modelName || Platform.OS} · v{APP_VERSION}
           {'\n'}
-          Background location works best on installed APK/IPA (not only Expo Go).
+          Auto-shares live intel with your pair only. Pull to refresh.
         </Text>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-function PersonCard({ title, person, emptyHint }) {
+function IntelTile({ label, value }) {
+  return (
+    <View style={styles.tile}>
+      <Text style={styles.tileVal} numberOfLines={2}>
+        {value == null || value === '' ? '—' : String(value)}
+      </Text>
+      <Text style={styles.tileLbl}>{label}</Text>
+    </View>
+  );
+}
+
+function PersonIntel({ title, person, emptyHint }) {
   if (!person) {
     return (
       <View style={styles.card}>
@@ -644,6 +1080,12 @@ function PersonCard({ title, person, emptyHint }) {
   }
   const pct = person.battery;
   const bc = batteryColor(pct, person.charging);
+  const net =
+    person.is_wifi === true
+      ? 'Wi‑Fi'
+      : person.network ||
+        (person.is_internet === false ? 'Offline net' : person.cellular_gen || '—');
+
   return (
     <View style={styles.card}>
       <View style={styles.cardHead}>
@@ -654,35 +1096,114 @@ function PersonCard({ title, person, emptyHint }) {
       </View>
       <Text style={styles.meta}>
         {person.online ? 'Online' : 'Offline'} · last seen {fmtAgo(person.last_seen)}
+        {person.app_state ? ` · app ${person.app_state}` : ''}
       </Text>
-      <View style={styles.row}>
-        <Text style={[styles.batt, { color: bc }]}>
-          🔋 {pct != null ? `${Math.round(pct)}%` : '—'}
-          {person.charging ? ' ⚡' : ''}
-          {person.low_power ? ' · Low Power' : ''}
-        </Text>
-      </View>
-      {!!person.mood || !!person.status_text ? (
+      <Text style={[styles.batt, { color: bc }]}>
+        🔋 {pct != null ? `${Math.round(pct)}%` : '—'}
+        {person.charging ? ' ⚡ charging' : ''}
+        {person.low_power ? ' · Low Power' : ''}
+      </Text>
+      {(person.mood || person.status_text || person.activity) && (
         <Text style={styles.statusLine}>
-          {person.mood ? `${person.mood}` : ''}
-          {person.mood && person.status_text ? ' — ' : ''}
+          {person.mood ? `${person.mood} ` : ''}
+          {person.activity ? `[${person.activity}] ` : ''}
           {person.status_text || ''}
         </Text>
-      ) : null}
-      <Text style={styles.meta}>
-        {person.lat != null
-          ? `${Number(person.lat).toFixed(5)}, ${Number(person.lng).toFixed(5)}`
-          : 'No GPS yet'}
-        {person.accuracy_m != null ? ` · ±${Math.round(person.accuracy_m)}m` : ''}
-      </Text>
-      <Text style={styles.meta}>
-        {person.platform || '—'}
-        {person.network ? ` · ${person.network}` : ''}
-        {person.speed_mps != null && person.speed_mps > 0.5
-          ? ` · ${(person.speed_mps * 3.6).toFixed(0)} km/h`
-          : ''}
-        {person.app_version ? ` · v${person.app_version}` : ''}
-      </Text>
+      )}
+      <View style={styles.grid}>
+        <IntelTile
+          label="Place"
+          value={person.place_name || (person.lat != null ? 'GPS only' : 'No GPS')}
+        />
+        <IntelTile
+          label="City"
+          value={[person.place_city, person.place_region].filter(Boolean).join(', ') || '—'}
+        />
+        <IntelTile label="Country" value={person.place_country || '—'} />
+        <IntelTile label="Time here" value={fmtDuration(person.time_at_place_s)} />
+        <IntelTile label="Motion" value={motionLabel(person.motion)} />
+        <IntelTile
+          label="Speed"
+          value={
+            person.speed_kmh != null
+              ? `${person.speed_kmh} km/h`
+              : person.speed_mps != null
+                ? `${(person.speed_mps * 3.6).toFixed(0)} km/h`
+                : '—'
+          }
+        />
+        <IntelTile
+          label="Heading"
+          value={
+            person.heading_cardinal ||
+            (person.heading != null ? `${Math.round(person.heading)}°` : '—')
+          }
+        />
+        <IntelTile
+          label="Altitude"
+          value={person.altitude_m != null ? `${Math.round(person.altitude_m)} m` : '—'}
+        />
+        <IntelTile
+          label="GPS accuracy"
+          value={person.accuracy_m != null ? `±${Math.round(person.accuracy_m)} m` : '—'}
+        />
+        <IntelTile
+          label="Home"
+          value={
+            !person.home_set
+              ? 'Not set'
+              : person.at_home
+                ? 'At home'
+                : fmtDist(person.dist_from_home_m)
+          }
+        />
+        <IntelTile label="Network" value={net} />
+        <IntelTile label="Cell" value={person.cellular_gen || '—'} />
+        <IntelTile label="Carrier" value={person.carrier || '—'} />
+        <IntelTile
+          label="Weather"
+          value={
+            person.weather_temp_c != null
+              ? `${person.weather_temp_c}° · ${person.weather_label || '—'}`
+              : '—'
+          }
+        />
+        <IntelTile label="Day / night" value={person.day_night || '—'} />
+        <IntelTile
+          label="Local hour"
+          value={person.local_hour != null ? `${person.local_hour}:00` : '—'}
+        />
+        <IntelTile label="Timezone" value={person.timezone || '—'} />
+        <IntelTile label="Language" value={person.locale || '—'} />
+        <IntelTile
+          label="Device"
+          value={
+            [person.device_brand, person.device_model].filter(Boolean).join(' ') ||
+            person.platform ||
+            '—'
+          }
+        />
+        <IntelTile
+          label="OS"
+          value={
+            [person.os_name, person.os_version].filter(Boolean).join(' ') || '—'
+          }
+        />
+        <IntelTile label="App" value={person.app_version ? `v${person.app_version}` : '—'} />
+        <IntelTile label="Traveled today" value={fmtDist(person.traveled_m_today)} />
+        <IntelTile label="Places today" value={person.places_today ?? '—'} />
+        <IntelTile label="GPS points today" value={person.points_today ?? '—'} />
+        <IntelTile label="Pings sent" value={person.ping_count ?? 0} />
+        <IntelTile label="Notes sent" value={person.note_count ?? 0} />
+        <IntelTile
+          label="Coords"
+          value={
+            person.lat != null
+              ? `${Number(person.lat).toFixed(4)}, ${Number(person.lng).toFixed(4)}`
+              : '—'
+          }
+        />
+      </View>
     </View>
   );
 }
@@ -754,6 +1275,7 @@ const styles = StyleSheet.create({
     borderColor: '#3b2d55',
     marginBottom: 10,
   },
+  sosBanner: { borderColor: '#f87171', backgroundColor: '#2a1218' },
   bannerTitle: { color: '#f8fafc', fontWeight: '800', marginBottom: 4 },
   bannerBody: { color: '#94a3b8', lineHeight: 18 },
   code: { color: '#f472b6', fontWeight: '900', letterSpacing: 1 },
@@ -771,9 +1293,11 @@ const styles = StyleSheet.create({
     alignItems: 'baseline',
     paddingHorizontal: 20,
     paddingVertical: 12,
+    flexWrap: 'wrap',
   },
   distValue: { color: '#f8fafc', fontSize: 28, fontWeight: '900' },
   distLabel: { color: '#94a3b8', marginLeft: 8, fontSize: 14 },
+  bothOnline: { color: '#34d399', fontSize: 13, fontWeight: '700' },
   card: {
     marginHorizontal: 16,
     marginBottom: 12,
@@ -788,9 +1312,44 @@ const styles = StyleSheet.create({
   dot: { width: 10, height: 10, borderRadius: 5 },
   meta: { color: '#94a3b8', fontSize: 12, marginTop: 4 },
   batt: { fontSize: 18, fontWeight: '800', marginTop: 8 },
-  row: { flexDirection: 'row', alignItems: 'center' },
   statusLine: { color: '#e2e8f0', marginTop: 8, fontStyle: 'italic' },
   muted: { color: '#64748b' },
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: 10,
+    marginHorizontal: -4,
+  },
+  tile: {
+    width: '33.33%',
+    paddingHorizontal: 4,
+    paddingVertical: 8,
+  },
+  tileVal: { color: '#f8fafc', fontSize: 13, fontWeight: '800' },
+  tileLbl: { color: '#64748b', fontSize: 10, marginTop: 2 },
+  rowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  chip: {
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: '#3b2d55',
+    backgroundColor: '#24182e',
+  },
+  chipPink: { backgroundColor: '#f472b633', borderColor: '#f472b6' },
+  chipGhost: { backgroundColor: 'transparent' },
+  chipDanger: { backgroundColor: '#f8717133', borderColor: '#f87171' },
+  chipText: { color: '#f8fafc', fontSize: 13, fontWeight: '600' },
+  moodBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#24182e',
+    borderWidth: 1,
+    borderColor: '#3b2d55',
+  },
   footer: {
     color: '#475569',
     fontSize: 11,

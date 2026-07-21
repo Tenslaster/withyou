@@ -85,6 +85,18 @@
     .batt { font-size: 1.15rem; font-weight: 800; margin-top: 8px; }
     .status-line { color: #e2e8f0; margin-top: 8px; font-style: italic; }
     .muted { color: var(--dim); }
+    .grid { display: flex; flex-wrap: wrap; margin-top: 10px; }
+    .tile { width: 33.33%; padding: 6px 4px; }
+    .tile-val { color: var(--text); font-size: 0.8rem; font-weight: 800; word-break: break-word; }
+    .tile-lbl { color: var(--dim); font-size: 0.65rem; margin-top: 2px; }
+    .row-btns { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+    .row-btns .btn { width: 100%; }
+    select {
+      width: 100%; background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px 14px; color: var(--text); font-size: 1rem;
+      margin-bottom: 8px;
+    }
+    .banner.sos { border-color: var(--danger); background: #2a1218; }
     .install {
       background: linear-gradient(135deg, #2a1835, #1a1220);
       border: 1px solid #4a3060; border-radius: 14px; padding: 14px; margin-bottom: 16px;
@@ -154,6 +166,8 @@
       <span>Share invite code <span class="code" id="invite-code">—</span> so they can join. Only 2 devices.</span>
     </div>
 
+    <div id="care-alerts"></div>
+
     <div id="map"></div>
 
     <div class="dist-row">
@@ -164,9 +178,33 @@
 
     <div id="partner-card" class="card"></div>
     <div id="me-card" class="card"></div>
+    <div id="stats-card" class="card"></div>
+
+    <div class="card">
+      <p class="card-title">Care</p>
+      <div class="row-btns">
+        <button type="button" class="btn btn-ghost" id="btn-ping">💗 Thinking of you</button>
+        <button type="button" class="btn btn-ghost" id="btn-sos">🚨 SOS</button>
+        <button type="button" class="btn btn-ghost" id="btn-home">🏠 Set home here</button>
+      </div>
+      <input id="love-note" placeholder="Love note to partner…" maxlength="280" style="margin-top:10px" />
+      <button type="button" class="btn btn-primary" id="btn-note">Send love note</button>
+    </div>
 
     <div class="card">
       <p class="card-title">Your status</p>
+      <label class="label" for="activity">Activity</label>
+      <select id="activity">
+        <option value="">—</option>
+        <option value="home">🏠 Home</option>
+        <option value="work">💼 Work</option>
+        <option value="gym">🏋️ Gym</option>
+        <option value="sleep">😴 Sleep</option>
+        <option value="out">🚗 Out</option>
+        <option value="food">🍽️ Food</option>
+        <option value="travel">✈️ Travel</option>
+        <option value="study">📚 Study</option>
+      </select>
       <input id="mood" placeholder="Mood (happy, tired…)" style="margin-top:10px" />
       <input id="status-text" placeholder="Status message" />
       <button type="button" class="btn btn-primary" id="btn-update">Update now</button>

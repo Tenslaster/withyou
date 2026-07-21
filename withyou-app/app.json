@@ -2,7 +2,7 @@
   "expo": {
     "name": "WithYou",
     "slug": "withyou",
-    "version": "1.0.2",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -22,13 +22,14 @@
         "NSLocationAlwaysAndWhenInUseUsageDescription": "WithYou can update your location in the background for your partner only.",
         "UIBackgroundModes": [
           "location",
-          "fetch"
+          "fetch",
+          "remote-notification"
         ]
       }
     },
     "android": {
       "package": "com.withyou.pair",
-      "versionCode": 4,
+      "versionCode": 5,
       "adaptiveIcon": {
         "backgroundColor": "#ffb6c1",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -42,11 +43,14 @@
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
         "RECEIVE_BOOT_COMPLETED",
+        "POST_NOTIFICATIONS",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_BACKGROUND_LOCATION",
         "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_LOCATION"
+        "android.permission.FOREGROUND_SERVICE_LOCATION",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.READ_PHONE_STATE"
       ]
     },
     "plugins": [
@@ -58,7 +62,14 @@
           "isIosBackgroundLocationEnabled": true
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-localization",
+      [
+        "expo-notifications",
+        {
+          "color": "#f472b6"
+        }
+      ]
     ],
     "extra": {
       "apiUrl": "https://crew.kingdom.forum/withyou",

@@ -4,7 +4,7 @@
 
   const TOKEN_KEY = "withyou_token_v1";
   const NAME_KEY = "withyou_name_v1";
-  const APP_VERSION = "1.0.0-pwa";
+  const APP_VERSION = "1.1.0-pwa";
   const POLL_MS = 12000;
   const HEARTBEAT_MS = 20000;
 
@@ -103,16 +103,49 @@
     );
   }
 
+  function fmtDuration(sec) {
+    if (sec == null || Number.isNaN(sec)) return "—";
+    const s = Math.max(0, Math.floor(sec));
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m`;
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return m ? `${h}h ${m}m` : `${h}h`;
+  }
+
+  function motionLabel(m) {
+    const map = {
+      still: "Still",
+      walking: "Walking",
+      running_or_bike: "Running / bike",
+      driving: "Driving",
+      unknown: "Unknown",
+    };
+    return map[m] || m || "—";
+  }
+
   async function collectTelemetry() {
+    const hour = new Date().getHours();
     const body = {
       platform: "web",
       app_version: APP_VERSION,
       mood: $("mood")?.value || undefined,
       status_text: $("status-text")?.value || undefined,
+      activity: $("activity")?.value || undefined,
       network: navigator.onLine ? "online" : "offline",
+      is_internet: !!navigator.onLine,
+      is_wifi: undefined,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+      locale: navigator.language || "",
+      app_state: document.visibilityState === "visible" ? "active" : "background",
+      local_hour: hour,
+      day_night: hour >= 6 && hour < 20 ? "day" : "night",
+      device_model: navigator.userAgentData?.model || "",
+      device_brand: navigator.userAgentData?.platform || "",
+      os_name: "web",
+      os_version: "",
     };
 
-    // Battery Status API (Chrome/Android; often missing on iOS Safari)
     try {
       if (navigator.getBattery) {
         const bat = await navigator.getBattery();
@@ -123,7 +156,6 @@
       /* optional */
     }
 
-    // Geolocation
     try {
       const pos = await new Promise((resolve, reject) => {
         if (!navigator.geolocation) {
@@ -139,11 +171,33 @@
       body.lat = pos.coords.latitude;
       body.lng = pos.coords.longitude;
       if (pos.coords.accuracy != null) body.accuracy_m = pos.coords.accuracy;
-      if (pos.coords.speed != null && pos.coords.speed >= 0) body.speed_mps = pos.coords.speed;
+      if (pos.coords.speed != null && pos.coords.speed >= 0) {
+        body.speed_mps = pos.coords.speed;
+        if (pos.coords.speed < 0.4) body.motion = "still";
+        else if (pos.coords.speed < 2) body.motion = "walking";
+        else if (pos.coords.speed < 8) body.motion = "running_or_bike";
+        else body.motion = "driving";
+      }
       if (pos.coords.heading != null && pos.coords.heading >= 0) body.heading = pos.coords.heading;
       if (pos.coords.altitude != null) body.altitude_m = pos.coords.altitude;
+      try {
+        const url =
+          `https://api.open-meteo.com/v1/forecast?latitude=${body.lat}&longitude=${body.lng}` +
+          `&current=temperature_2m,weather_code&timezone=auto`;
+        const wr = await fetch(url);
+        if (wr.ok) {
+          const wj = await wr.json();
+          if (wj?.current) {
+            body.weather_temp_c = wj.current.temperature_2m;
+            body.weather_code = wj.current.weather_code;
+            body.weather_label = String(wj.current.weather_code);
+          }
+        }
+      } catch {
+        /* weather optional */
+      }
     } catch {
-      /* permission denied or unavailable */
+      /* permission denied */
     }
     return body;
   }
@@ -175,6 +229,11 @@
     }
   }
 
+  function tile(label, value) {
+    const v = value == null || value === "" ? "—" : String(value);
+    return `<div class="tile"><div class="tile-val">${v}</div><div class="tile-lbl">${label}</div></div>`;
+  }
+
   function personCardHtml(title, person, emptyHint) {
     if (!person) {
       return `<p class="card-title">${title}</p><p class="muted">${emptyHint}</p>`;
@@ -182,35 +241,56 @@
     const pct = person.battery;
     const bc = batteryColor(pct, person.charging);
     const moodLine =
-      person.mood || person.status_text
-        ? `<p class="status-line">${person.mood || ""}${
-            person.mood && person.status_text ? " — " : ""
-          }${person.status_text || ""}</p>`
+      person.mood || person.status_text || person.activity
+        ? `<p class="status-line">${person.mood || ""} ${
+            person.activity ? "[" + person.activity + "]" : ""
+          } ${person.status_text || ""}</p>`
         : "";
-    const coords =
-      person.lat != null
-        ? `${Number(person.lat).toFixed(5)}, ${Number(person.lng).toFixed(5)}`
-        : "No GPS yet";
     const speed =
-      person.speed_mps != null && person.speed_mps > 0.5
-        ? ` · ${(person.speed_mps * 3.6).toFixed(0)} km/h`
-        : "";
+      person.speed_kmh != null
+        ? `${person.speed_kmh} km/h`
+        : person.speed_mps != null
+          ? `${(person.speed_mps * 3.6).toFixed(0)} km/h`
+          : "—";
+    const home = !person.home_set
+      ? "Not set"
+      : person.at_home
+        ? "At home"
+        : fmtDist(person.dist_from_home_m);
     return `
       <div class="card-head">
         <p class="card-title">${person.emoji || "💕"} ${person.display_name || title}</p>
         <span class="dot ${person.online ? "on" : ""}"></span>
       </div>
-      <p class="meta">${person.online ? "Online" : "Offline"} · last seen ${fmtAgo(person.last_seen)}</p>
+      <p class="meta">${person.online ? "Online" : "Offline"} · last seen ${fmtAgo(person.last_seen)}${
+      person.app_state ? " · app " + person.app_state : ""
+    }</p>
       <p class="batt" style="color:${bc}">🔋 ${pct != null ? Math.round(pct) + "%" : "—"}${
-      person.charging ? " ⚡" : ""
+      person.charging ? " ⚡ charging" : ""
     }${person.low_power ? " · Low Power" : ""}</p>
       ${moodLine}
-      <p class="meta">${coords}${
-      person.accuracy_m != null ? ` · ±${Math.round(person.accuracy_m)}m` : ""
-    }</p>
-      <p class="meta">${person.platform || "—"}${
-      person.network ? ` · ${person.network}` : ""
-    }${speed}${person.app_version ? ` · v${person.app_version}` : ""}</p>
+      <div class="grid">
+        ${tile("Place", person.place_name || (person.lat != null ? "GPS" : "No GPS"))}
+        ${tile("City", [person.place_city, person.place_region].filter(Boolean).join(", "))}
+        ${tile("Time here", fmtDuration(person.time_at_place_s))}
+        ${tile("Motion", motionLabel(person.motion))}
+        ${tile("Speed", speed)}
+        ${tile("Heading", person.heading_cardinal || "—")}
+        ${tile("Altitude", person.altitude_m != null ? Math.round(person.altitude_m) + " m" : "—")}
+        ${tile("Home", home)}
+        ${tile("Network", person.network || "—")}
+        ${tile("Cell", person.cellular_gen || "—")}
+        ${tile("Carrier", person.carrier || "—")}
+        ${tile("Weather", person.weather_temp_c != null ? person.weather_temp_c + "°" : "—")}
+        ${tile("Day/night", person.day_night || "—")}
+        ${tile("Timezone", person.timezone || "—")}
+        ${tile("Device", [person.device_brand, person.device_model].filter(Boolean).join(" ") || person.platform || "—")}
+        ${tile("OS", [person.os_name, person.os_version].filter(Boolean).join(" "))}
+        ${tile("Traveled today", fmtDist(person.traveled_m_today))}
+        ${tile("Places today", person.places_today)}
+        ${tile("Pings", person.ping_count ?? 0)}
+        ${tile("Notes", person.note_count ?? 0)}
+      </div>
     `;
   }
 
@@ -282,11 +362,48 @@
     $("dist-val").textContent = fmtDist(pair?.distance_m);
     $("partner-card").innerHTML = personCardHtml("Partner", partner, "Not joined yet");
     $("me-card").innerHTML = personCardHtml("You", me, "Share location to appear");
+    const stats = pair?.stats || {};
+    if ($("stats-card")) {
+      $("stats-card").innerHTML =
+        `<p class="card-title">Couple stats</p><div class="grid">` +
+        tile("Days together", pair?.days_together) +
+        tile("Now apart", fmtDist(pair?.distance_m)) +
+        tile("Max apart today", fmtDist(stats.max_distance_m_today)) +
+        tile("Closest today", fmtDist(stats.min_distance_m_today)) +
+        tile("Care pings", stats.care_pings_total ?? 0) +
+        tile("Love notes", stats.love_notes_total ?? 0) +
+        tile("Both online", stats.both_online ? "Yes" : "No") +
+        tile("Partner places", partner?.places_today ?? "—") +
+        `</div>`;
+    }
+    const alerts = $("care-alerts");
+    if (alerts) {
+      let html = "";
+      if (partner?.sos_active) {
+        html += `<div class="banner sos"><strong>🚨 PARTNER SOS</strong><span>${
+          partner.sos_message || "Needs you"
+        }</span></div>`;
+      }
+      if (me?.love_note) {
+        html += `<div class="banner"><strong>💕 Note from ${
+          me.love_note_from || "partner"
+        }</strong><span>${me.love_note}</span></div>`;
+      }
+      if (me?.thinking_of_you_at) {
+        html += `<div class="banner"><strong>💗 Thinking of you</strong><span>Pinged ${fmtAgo(
+          me.thinking_of_you_at
+        )}</span></div>`;
+      }
+      alerts.innerHTML = html;
+    }
     if (me?.mood != null && document.activeElement !== $("mood")) {
       $("mood").value = me.mood || "";
     }
     if (me?.status_text != null && document.activeElement !== $("status-text")) {
       $("status-text").value = me.status_text || "";
+    }
+    if (me?.activity != null && $("activity") && document.activeElement !== $("activity")) {
+      $("activity").value = me.activity || "";
     }
     updateMap();
     $("footer-hint").textContent = `Web PWA · v${APP_VERSION} · API ${API}\nKeep Safari open (or Home Screen app) for live updates.`;
@@ -437,10 +554,84 @@
     goPairScreen();
   }
 
+  async function sendPing() {
+    try {
+      const data = await api("/care/ping", { method: "POST", body: {} });
+      pair = data;
+      renderMain();
+      alert("Sent 💗 Thinking of you");
+    } catch (e) {
+      alert(e.message || "Ping failed");
+    }
+  }
+  async function sendNote() {
+    const note = ($("love-note")?.value || "").trim();
+    if (!note) {
+      alert("Type a note first");
+      return;
+    }
+    try {
+      const data = await api("/care/note", { method: "POST", body: { note } });
+      pair = data;
+      $("love-note").value = "";
+      renderMain();
+      alert("Love note sent 💕");
+    } catch (e) {
+      alert(e.message || "Note failed");
+    }
+  }
+  async function sendSos() {
+    const active = !pair?.me?.sos_active;
+    if (active && !confirm("Send SOS to partner?")) return;
+    try {
+      const data = await api("/care/sos", {
+        method: "POST",
+        body: {
+          active,
+          message: "I need you — please check on me",
+        },
+      });
+      pair = data;
+      renderMain();
+    } catch (e) {
+      alert(e.message || "SOS failed");
+    }
+  }
+  async function setHome() {
+    try {
+      const data = await api("/home", {
+        method: "POST",
+        body: { lat: pair?.me?.lat, lng: pair?.me?.lng },
+      });
+      pair = data;
+      renderMain();
+      heartbeat();
+      alert("Home saved");
+    } catch (e) {
+      alert(e.message || "Need GPS first");
+    }
+  }
+
   $("btn-create").addEventListener("click", createPair);
   $("btn-join").addEventListener("click", joinPair);
   $("btn-leave").addEventListener("click", leavePair);
   $("btn-update").addEventListener("click", heartbeat);
+  $("btn-ping")?.addEventListener("click", sendPing);
+  $("btn-note")?.addEventListener("click", sendNote);
+  $("btn-sos")?.addEventListener("click", sendSos);
+  $("btn-home")?.addEventListener("click", setHome);
+  $("activity")?.addEventListener("change", async () => {
+    try {
+      const data = await api("/care/activity", {
+        method: "POST",
+        body: { activity: $("activity").value },
+      });
+      pair = data;
+      renderMain();
+    } catch {
+      /* ignore */
+    }
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && token) heartbeat();
   });

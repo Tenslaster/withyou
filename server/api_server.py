@@ -57,8 +57,10 @@ _WEB_FILES = {
     "/icon-192.png": "icon-192.png",
     "/icon-512.png": "icon-512.png",
 }
-MAX_HISTORY = 40
+MAX_HISTORY = 80
 HEARTBEAT_STALE_S = 120  # >2 min without beat → offline
+PLACE_MOVE_M = 80  # re-count "arrived" if moved more than this
+HOME_RADIUS_M = 120
 
 _lock = threading.RLock()
 _db: dict[str, Any] = {"pairs": {}, "devices": {}}
@@ -70,6 +72,103 @@ def _log(msg: str) -> None:
 
 def _now() -> float:
     return time.time()
+
+
+def _heading_cardinal(deg: Any) -> str:
+    try:
+        d = float(deg) % 360
+    except (TypeError, ValueError):
+        return ""
+    dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+    return dirs[int((d + 22.5) // 45) % 8]
+
+
+def _motion_from_speed(speed_mps: Any) -> str:
+    try:
+        s = float(speed_mps)
+    except (TypeError, ValueError):
+        return "unknown"
+    if s < 0.4:
+        return "still"
+    if s < 2.0:
+        return "walking"
+    if s < 8.0:
+        return "running_or_bike"
+    return "driving"
+
+
+def _clip_str(v: Any, n: int) -> str:
+    return str(v or "")[:n]
+
+
+def _send_expo_push(tokens: list[str], title: str, body: str, data: Optional[dict] = None) -> None:
+    """Best-effort Expo push (Expo Go / standalone with projectId)."""
+    toks = [t for t in tokens if isinstance(t, str) and t.startswith("ExponentPushToken")]
+    if not toks:
+        return
+    try:
+        import urllib.request
+
+        payload = [
+            {
+                "to": t,
+                "title": title[:80],
+                "body": body[:200],
+                "sound": "default",
+                "data": data or {},
+            }
+            for t in toks
+        ]
+        req = urllib.request.Request(
+            "https://exp.host/--/api/v2/push/send",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "WithYou-API/1.1",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            resp.read()
+    except Exception as e:
+        _log(f"push failed: {e}")
+
+
+def _partner_push_tokens(pair: dict, me_id: str) -> list[str]:
+    out: list[str] = []
+    for did, d in (pair.get("members") or {}).items():
+        if did == me_id:
+            continue
+        tok = d.get("push_token")
+        if tok:
+            out.append(str(tok))
+    return out
+
+
+def _compute_member_stats(member: dict, now: float) -> dict:
+    hist = list(member.get("history") or [])
+    day_start = now - (now % 86400)
+    today = [h for h in hist if float(h.get("ts") or 0) >= day_start]
+    traveled = 0.0
+    for i in range(1, len(today)):
+        a, b = today[i - 1], today[i]
+        try:
+            traveled += _haversine_m(
+                float(a["lat"]), float(a["lng"]), float(b["lat"]), float(b["lng"])
+            )
+        except (KeyError, TypeError, ValueError):
+            pass
+    places = set()
+    for h in today:
+        pn = (h.get("place_name") or "").strip().lower()
+        if pn:
+            places.add(pn)
+    return {
+        "points_today": len(today),
+        "traveled_m_today": round(traveled),
+        "places_today": len(places),
+    }
 
 
 def _load() -> None:
@@ -108,7 +207,29 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 def _public_device(d: dict, *, hide_token: bool = True) -> dict:
     last = float(d.get("last_seen") or 0)
-    online = (_now() - last) <= HEARTBEAT_STALE_S if last else False
+    now = _now()
+    online = (now - last) <= HEARTBEAT_STALE_S if last else False
+    speed = d.get("speed_mps")
+    try:
+        speed_kmh = round(float(speed) * 3.6, 1) if speed is not None else None
+    except (TypeError, ValueError):
+        speed_kmh = None
+    motion = d.get("motion") or _motion_from_speed(speed)
+    arrived = d.get("arrived_at")
+    try:
+        time_at_place_s = int(max(0, now - float(arrived))) if arrived else None
+    except (TypeError, ValueError):
+        time_at_place_s = None
+    heading = d.get("heading")
+    stats = _compute_member_stats(d, now)
+    # home distance
+    dist_home = d.get("dist_from_home_m")
+    at_home = None
+    if dist_home is not None:
+        try:
+            at_home = float(dist_home) <= HOME_RADIUS_M
+        except (TypeError, ValueError):
+            at_home = None
     out = {
         "device_id": d.get("device_id"),
         "display_name": d.get("display_name") or "Partner",
@@ -117,20 +238,104 @@ def _public_device(d: dict, *, hide_token: bool = True) -> dict:
         "online": online,
         "battery": d.get("battery"),
         "charging": bool(d.get("charging")),
+        "low_power": bool(d.get("low_power")),
         "lat": d.get("lat"),
         "lng": d.get("lng"),
         "accuracy_m": d.get("accuracy_m"),
         "speed_mps": d.get("speed_mps"),
-        "heading": d.get("heading"),
+        "speed_kmh": speed_kmh,
+        "heading": heading,
+        "heading_cardinal": d.get("heading_cardinal") or _heading_cardinal(heading),
         "altitude_m": d.get("altitude_m"),
         "network": d.get("network") or "",
+        "is_wifi": bool(d.get("is_wifi")) if d.get("is_wifi") is not None else None,
+        "is_internet": bool(d.get("is_internet")) if d.get("is_internet") is not None else None,
+        "cellular_gen": d.get("cellular_gen") or "",
+        "carrier": d.get("carrier") or "",
         "platform": d.get("platform") or "",
         "app_version": d.get("app_version") or "",
+        "device_model": d.get("device_model") or "",
+        "device_brand": d.get("device_brand") or "",
+        "os_name": d.get("os_name") or "",
+        "os_version": d.get("os_version") or "",
+        "timezone": d.get("timezone") or "",
+        "locale": d.get("locale") or "",
+        "app_state": d.get("app_state") or "",
+        "motion": motion,
+        "place_name": d.get("place_name") or "",
+        "place_city": d.get("place_city") or "",
+        "place_region": d.get("place_region") or "",
+        "place_country": d.get("place_country") or "",
+        "arrived_at": arrived,
+        "time_at_place_s": time_at_place_s,
+        "dist_from_home_m": dist_home,
+        "at_home": at_home,
+        "home_set": bool(d.get("home_lat") is not None and d.get("home_lng") is not None),
         "mood": d.get("mood") or "",
         "status_text": d.get("status_text") or "",
-        "low_power": bool(d.get("low_power")),
+        "activity": d.get("activity") or "",
+        "love_note": d.get("love_note") or "",
+        "love_note_at": d.get("love_note_at"),
+        "love_note_from": d.get("love_note_from") or "",
+        "thinking_of_you_at": d.get("thinking_of_you_at"),
+        "sos_active": bool(d.get("sos_active")),
+        "sos_message": d.get("sos_message") or "",
+        "sos_at": d.get("sos_at"),
+        "weather_temp_c": d.get("weather_temp_c"),
+        "weather_code": d.get("weather_code"),
+        "weather_label": d.get("weather_label") or "",
+        "local_hour": d.get("local_hour"),
+        "day_night": d.get("day_night") or "",
+        "points_today": stats["points_today"],
+        "traveled_m_today": stats["traveled_m_today"],
+        "places_today": stats["places_today"],
+        "ping_count": int(d.get("ping_count") or 0),
+        "note_count": int(d.get("note_count") or 0),
     }
     return out
+
+
+def _pair_stats(pair: dict, me_id: str, dist: Optional[float]) -> dict:
+    """Couple-level stats for the dashboard."""
+    members = pair.get("members") or {}
+    me = members.get(me_id) or {}
+    partner = None
+    for did, d in members.items():
+        if did != me_id:
+            partner = d
+            break
+    now = _now()
+    day_start = now - (now % 86400)
+    # distance history for today from either side's last beats
+    max_d = pair.get("max_distance_today")
+    min_d = pair.get("min_distance_today")
+    max_day = pair.get("max_distance_day")
+    min_day = pair.get("min_distance_day")
+    if max_day != int(day_start):
+        max_d, min_d = None, None
+    if dist is not None:
+        if max_d is None or dist > max_d:
+            max_d = dist
+        if min_d is None or dist < min_d:
+            min_d = dist
+        pair["max_distance_today"] = max_d
+        pair["min_distance_today"] = min_d
+        pair["max_distance_day"] = int(day_start)
+        pair["min_distance_day"] = int(day_start)
+    pings = int(me.get("ping_count") or 0) + int((partner or {}).get("ping_count") or 0)
+    notes = int(me.get("note_count") or 0) + int((partner or {}).get("note_count") or 0)
+    return {
+        "max_distance_m_today": max_d,
+        "min_distance_m_today": min_d,
+        "care_pings_total": pings,
+        "love_notes_total": notes,
+        "both_online": bool(
+            me
+            and partner
+            and (_now() - float(me.get("last_seen") or 0)) <= HEARTBEAT_STALE_S
+            and (_now() - float(partner.get("last_seen") or 0)) <= HEARTBEAT_STALE_S
+        ),
+    }
 
 
 def _pair_public(pair: dict, me_id: str) -> dict:
@@ -164,6 +369,20 @@ def _pair_public(pair: dict, me_id: str) -> dict:
     days = None
     if together_since:
         days = max(0, int((_now() - float(together_since)) // 86400))
+    stats = _pair_stats(pair, me_id, dist)
+    # recent partner trail
+    trail = []
+    if partner:
+        for h in list(partner.get("history") or [])[-12:]:
+            trail.append(
+                {
+                    "ts": h.get("ts"),
+                    "lat": h.get("lat"),
+                    "lng": h.get("lng"),
+                    "place_name": h.get("place_name") or "",
+                    "battery": h.get("battery"),
+                }
+            )
     return {
         "pair_id": pair.get("pair_id"),
         "invite_code": pair.get("invite_code"),
@@ -173,6 +392,8 @@ def _pair_public(pair: dict, me_id: str) -> dict:
         "partner": _public_device(partner) if partner else None,
         "distance_m": dist,
         "partner_joined": partner is not None,
+        "stats": stats,
+        "partner_trail": trail,
     }
 
 
@@ -676,12 +897,17 @@ ol{{margin:12px 0 0;padding-left:1.2rem;color:#94a3b8;font-size:.85rem;line-heig
                 self._json(401, {"error": "Unauthorized"})
                 return
             mid, _member, pair = auth
+            push_events: list[tuple[str, str, dict]] = []
             with _lock:
                 member = (pair.get("members") or {}).get(mid)
                 if not isinstance(member, dict):
                     self._json(401, {"error": "Unauthorized"})
                     return
                 now = _now()
+                prev_battery = member.get("battery")
+                prev_online = bool(member.get("last_seen")) and (
+                    now - float(member.get("last_seen") or 0)
+                ) <= HEARTBEAT_STALE_S
                 member["last_seen"] = now
                 # optional profile
                 if data.get("display_name"):
@@ -692,6 +918,8 @@ ol{{margin:12px 0 0;padding-left:1.2rem;color:#94a3b8;font-size:.85rem;line-heig
                     member["mood"] = str(data.get("mood"))[:40]
                 if data.get("status_text") is not None:
                     member["status_text"] = str(data.get("status_text"))[:120]
+                if data.get("activity") is not None:
+                    member["activity"] = _clip_str(data.get("activity"), 32)
                 # battery
                 if data.get("battery") is not None:
                     try:
@@ -703,6 +931,49 @@ ol{{margin:12px 0 0;padding-left:1.2rem;color:#94a3b8;font-size:.85rem;line-heig
                     member["charging"] = bool(data.get("charging"))
                 if "low_power" in data:
                     member["low_power"] = bool(data.get("low_power"))
+                # device / network extras
+                for k, n in (
+                    ("network", 32),
+                    ("platform", 16),
+                    ("app_version", 24),
+                    ("device_model", 48),
+                    ("device_brand", 32),
+                    ("os_name", 24),
+                    ("os_version", 24),
+                    ("timezone", 48),
+                    ("locale", 24),
+                    ("app_state", 16),
+                    ("cellular_gen", 16),
+                    ("carrier", 40),
+                    ("place_name", 80),
+                    ("place_city", 48),
+                    ("place_region", 48),
+                    ("place_country", 48),
+                    ("weather_label", 40),
+                    ("day_night", 12),
+                    ("motion", 24),
+                    ("heading_cardinal", 4),
+                ):
+                    if data.get(k) is not None:
+                        member[k] = _clip_str(data.get(k), n)
+                for k in ("is_wifi", "is_internet"):
+                    if k in data:
+                        member[k] = bool(data.get(k))
+                if data.get("local_hour") is not None:
+                    try:
+                        member["local_hour"] = int(data.get("local_hour")) % 24
+                    except (TypeError, ValueError):
+                        pass
+                if data.get("weather_temp_c") is not None:
+                    try:
+                        member["weather_temp_c"] = round(float(data.get("weather_temp_c")), 1)
+                    except (TypeError, ValueError):
+                        pass
+                if data.get("weather_code") is not None:
+                    try:
+                        member["weather_code"] = int(data.get("weather_code"))
+                    except (TypeError, ValueError):
+                        pass
                 # location
                 lat = data.get("lat")
                 lng = data.get("lng")
@@ -710,6 +981,7 @@ ol{{margin:12px 0 0;padding-left:1.2rem;color:#94a3b8;font-size:.85rem;line-heig
                     try:
                         lat_f, lng_f = float(lat), float(lng)
                         if -90 <= lat_f <= 90 and -180 <= lng_f <= 180:
+                            prev_lat, prev_lng = member.get("lat"), member.get("lng")
                             member["lat"] = lat_f
                             member["lng"] = lng_f
                             for k_src, k_dst in (
@@ -723,6 +995,44 @@ ol{{margin:12px 0 0;padding-left:1.2rem;color:#94a3b8;font-size:.85rem;line-heig
                                         member[k_dst] = float(data.get(k_src))
                                     except (TypeError, ValueError):
                                         pass
+                            if data.get("motion") is None and member.get("speed_mps") is not None:
+                                member["motion"] = _motion_from_speed(member.get("speed_mps"))
+                            if member.get("heading") is not None and not member.get(
+                                "heading_cardinal"
+                            ):
+                                member["heading_cardinal"] = _heading_cardinal(
+                                    member.get("heading")
+                                )
+                            # time at place
+                            moved = True
+                            if prev_lat is not None and prev_lng is not None:
+                                try:
+                                    moved = (
+                                        _haversine_m(
+                                            float(prev_lat),
+                                            float(prev_lng),
+                                            lat_f,
+                                            lng_f,
+                                        )
+                                        > PLACE_MOVE_M
+                                    )
+                                except (TypeError, ValueError):
+                                    moved = True
+                            if moved or not member.get("arrived_at"):
+                                member["arrived_at"] = now
+                            # home distance
+                            if member.get("home_lat") is not None and member.get("home_lng") is not None:
+                                try:
+                                    member["dist_from_home_m"] = round(
+                                        _haversine_m(
+                                            float(member["home_lat"]),
+                                            float(member["home_lng"]),
+                                            lat_f,
+                                            lng_f,
+                                        )
+                                    )
+                                except (TypeError, ValueError):
+                                    pass
                             hist = member.setdefault("history", [])
                             hist.append(
                                 {
@@ -730,18 +1040,207 @@ ol{{margin:12px 0 0;padding-left:1.2rem;color:#94a3b8;font-size:.85rem;line-heig
                                     "lat": lat_f,
                                     "lng": lng_f,
                                     "battery": member.get("battery"),
+                                    "place_name": member.get("place_name") or "",
+                                    "motion": member.get("motion") or "",
                                 }
                             )
                             if len(hist) > MAX_HISTORY:
                                 del hist[: len(hist) - MAX_HISTORY]
                     except (TypeError, ValueError):
                         pass
-                if data.get("network") is not None:
-                    member["network"] = str(data.get("network"))[:32]
-                if data.get("platform") is not None:
-                    member["platform"] = str(data.get("platform"))[:16]
-                if data.get("app_version") is not None:
-                    member["app_version"] = str(data.get("app_version"))[:24]
+
+                # important event pushes
+                name = member.get("display_name") or "Partner"
+                bat = member.get("battery")
+                try:
+                    if bat is not None and float(bat) <= 15:
+                        if prev_battery is None or float(prev_battery) > 15:
+                            push_events.append(
+                                (
+                                    f"{name} · low battery",
+                                    f"Battery at {int(float(bat))}%",
+                                    {"type": "low_battery"},
+                                )
+                            )
+                except (TypeError, ValueError):
+                    pass
+                if member.get("sos_active"):
+                    push_events.append(
+                        (
+                            f"SOS from {name}",
+                            member.get("sos_message") or "Needs you now",
+                            {"type": "sos"},
+                        )
+                    )
+
+                _save()
+                pub = _pair_public(pair, mid)
+                tokens = _partner_push_tokens(pair, mid)
+            for title, body, pdata in push_events:
+                _send_expo_push(tokens, title, body, pdata)
+            self._json(200, {"ok": True, **pub})
+            return
+
+        if path == "/push-token":
+            auth = self._auth_device()
+            if not auth:
+                self._json(401, {"error": "Unauthorized"})
+                return
+            mid, _member, pair = auth
+            tok = _clip_str(data.get("push_token") or data.get("token"), 200)
+            with _lock:
+                member = (pair.get("members") or {}).get(mid)
+                if not isinstance(member, dict):
+                    self._json(401, {"error": "Unauthorized"})
+                    return
+                if tok:
+                    member["push_token"] = tok
+                _save()
+            self._json(200, {"ok": True})
+            return
+
+        if path == "/home":
+            auth = self._auth_device()
+            if not auth:
+                self._json(401, {"error": "Unauthorized"})
+                return
+            mid, _member, pair = auth
+            with _lock:
+                member = (pair.get("members") or {}).get(mid)
+                if not isinstance(member, dict):
+                    self._json(401, {"error": "Unauthorized"})
+                    return
+                if data.get("clear"):
+                    member.pop("home_lat", None)
+                    member.pop("home_lng", None)
+                    member.pop("dist_from_home_m", None)
+                else:
+                    lat = data.get("lat", member.get("lat"))
+                    lng = data.get("lng", member.get("lng"))
+                    try:
+                        lat_f, lng_f = float(lat), float(lng)
+                        if -90 <= lat_f <= 90 and -180 <= lng_f <= 180:
+                            member["home_lat"] = lat_f
+                            member["home_lng"] = lng_f
+                            if member.get("lat") is not None:
+                                member["dist_from_home_m"] = round(
+                                    _haversine_m(
+                                        lat_f,
+                                        lng_f,
+                                        float(member["lat"]),
+                                        float(member["lng"]),
+                                    )
+                                )
+                    except (TypeError, ValueError):
+                        self._json(400, {"error": "Need valid lat/lng for home"})
+                        return
+                _save()
+                pub = _pair_public(pair, mid)
+            self._json(200, {"ok": True, **pub})
+            return
+
+        if path == "/care/note":
+            auth = self._auth_device()
+            if not auth:
+                self._json(401, {"error": "Unauthorized"})
+                return
+            mid, _member, pair = auth
+            note = _clip_str(data.get("note") or data.get("text"), 280)
+            if not note:
+                self._json(400, {"error": "Empty note"})
+                return
+            with _lock:
+                me = (pair.get("members") or {}).get(mid)
+                partner = None
+                for did, d in (pair.get("members") or {}).items():
+                    if did != mid:
+                        partner = d
+                        break
+                if not isinstance(me, dict):
+                    self._json(401, {"error": "Unauthorized"})
+                    return
+                me["note_count"] = int(me.get("note_count") or 0) + 1
+                if partner is not None:
+                    partner["love_note"] = note
+                    partner["love_note_at"] = _now()
+                    partner["love_note_from"] = me.get("display_name") or "Partner"
+                tokens = _partner_push_tokens(pair, mid)
+                name = me.get("display_name") or "Partner"
+                _save()
+                pub = _pair_public(pair, mid)
+            _send_expo_push(tokens, f"💕 Note from {name}", note, {"type": "love_note"})
+            self._json(200, {"ok": True, **pub})
+            return
+
+        if path == "/care/ping":
+            auth = self._auth_device()
+            if not auth:
+                self._json(401, {"error": "Unauthorized"})
+                return
+            mid, _member, pair = auth
+            with _lock:
+                me = (pair.get("members") or {}).get(mid)
+                partner = None
+                for did, d in (pair.get("members") or {}).items():
+                    if did != mid:
+                        partner = d
+                        break
+                if not isinstance(me, dict):
+                    self._json(401, {"error": "Unauthorized"})
+                    return
+                me["ping_count"] = int(me.get("ping_count") or 0) + 1
+                if partner is not None:
+                    partner["thinking_of_you_at"] = _now()
+                tokens = _partner_push_tokens(pair, mid)
+                name = me.get("display_name") or "Partner"
+                _save()
+                pub = _pair_public(pair, mid)
+            _send_expo_push(
+                tokens,
+                f"{name} is thinking of you",
+                "Tap to open WithYou 💗",
+                {"type": "ping"},
+            )
+            self._json(200, {"ok": True, **pub})
+            return
+
+        if path == "/care/sos":
+            auth = self._auth_device()
+            if not auth:
+                self._json(401, {"error": "Unauthorized"})
+                return
+            mid, _member, pair = auth
+            active = bool(data.get("active", True))
+            msg = _clip_str(data.get("message") or "I need you — please check on me", 160)
+            with _lock:
+                me = (pair.get("members") or {}).get(mid)
+                if not isinstance(me, dict):
+                    self._json(401, {"error": "Unauthorized"})
+                    return
+                me["sos_active"] = active
+                me["sos_message"] = msg if active else ""
+                me["sos_at"] = _now() if active else None
+                tokens = _partner_push_tokens(pair, mid)
+                name = me.get("display_name") or "Partner"
+                _save()
+                pub = _pair_public(pair, mid)
+            if active:
+                _send_expo_push(tokens, f"🚨 SOS from {name}", msg, {"type": "sos"})
+            self._json(200, {"ok": True, **pub})
+            return
+
+        if path == "/care/activity":
+            auth = self._auth_device()
+            if not auth:
+                self._json(401, {"error": "Unauthorized"})
+                return
+            mid, _member, pair = auth
+            with _lock:
+                me = (pair.get("members") or {}).get(mid)
+                if not isinstance(me, dict):
+                    self._json(401, {"error": "Unauthorized"})
+                    return
+                me["activity"] = _clip_str(data.get("activity"), 32)
                 _save()
                 pub = _pair_public(pair, mid)
             self._json(200, {"ok": True, **pub})
