@@ -1,35 +1,200 @@
-# DISABLED — free CI cannot produce a reliable Sideloadly IPA (Xcode/signing failures
-# spammed GitHub email). Do NOT re-enable without a paid Apple Developer account
-# or a known-good local Xcode archive.
+# Real device IPA for Sideloadly (free Apple ID re-sign on your PC).
 #
-# Use the WithYou PWA instead (no IPA, no CI, no emails):
-#   https://crew.kingdom.forum/withyou
-#   iPhone Safari → Share → Add to Home Screen
+# DIFFERENT from the old approach:
+#   - pre-builds ExpoModulesJSI (that script phase was the old failure)
+#   - uses `xcodebuild build` (not archive)
+#   - CODE_SIGNING_ALLOWED=NO only on the app target (not every Pod)
+#   - packs Payload/*.app → WithYou.ipa for Sideloadly
 #
-# Android APK remains available via android-apk.yml and dist/WithYou.apk
+# MANUAL ONLY (workflow_dispatch) — no push spam / failure emails.
 
-name: iOS IPA (DISABLED)
+name: iOS IPA for Sideloadly
 
 on:
   workflow_dispatch:
-    inputs:
-      confirm:
-        description: "Type ENABLE to attempt IPA build (will fail without Apple certs)"
-        required: true
-        default: "no"
 
 jobs:
-  skipped:
-    runs-on: ubuntu-latest
+  build-ipa:
+    runs-on: macos-15
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: withyou-app
+
     steps:
-      - name: IPA workflow permanently skipped
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: withyou-app/package-lock.json
+
+      - name: Show Xcode
         run: |
-          echo "iOS IPA CI is disabled to stop failure emails."
-          echo "Install on iPhone via PWA: https://crew.kingdom.forum/withyou"
-          echo "Safari → Share → Add to Home Screen"
-          if [ "${{ github.event.inputs.confirm }}" != "ENABLE" ]; then
-            echo "Not building. Set confirm=ENABLE only if you know what you are doing."
-            exit 0
+          xcodebuild -version
+          xcode-select -p
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Expo prebuild iOS
+        env:
+          EXPO_PUBLIC_WITHYOU_API: https://crew.kingdom.forum/withyou
+        run: npx expo prebuild --platform ios --clean --no-install --non-interactive
+
+      - name: CocoaPods install
+        working-directory: withyou-app/ios
+        run: |
+          pod install --repo-update
+          ls -la
+
+      - name: Prebuild ExpoModulesJSI xcframework (iphoneos only)
+        working-directory: withyou-app
+        run: |
+          set -euo pipefail
+          JSI_DIR="node_modules/expo-modules-jsi/apple"
+          if [ ! -f "$JSI_DIR/scripts/build-xcframework.sh" ]; then
+            echo "ExpoModulesJSI scripts missing"
+            ls -la node_modules/expo-modules-jsi || true
+            exit 1
           fi
-          echo "ENABLE set but no IPA build steps remain. Use PWA or paid Apple Dev + EAS."
-          exit 1
+          export PODS_ROOT="$PWD/ios/Pods"
+          export PLATFORM_NAME=iphoneos
+          export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+          chmod +x "$JSI_DIR/scripts/"*.sh
+          # Full log — this is what used to fail silently under archive
+          bash -x "$JSI_DIR/scripts/build-xcframework.sh" 2>&1 | tee /tmp/jsi-build.log | tail -n 80
+          # Must have a real arm64 device slice (not only stub)
+          SLICE="$JSI_DIR/Products/ExpoModulesJSI.xcframework/ios-arm64/ExpoModulesJSI.framework/ExpoModulesJSI"
+          if [ ! -f "$SLICE" ]; then
+            echo "Missing device slice binary"
+            find "$JSI_DIR/Products" -type f 2>/dev/null | head -n 50 || true
+            tail -n 100 /tmp/jsi-build.log || true
+            exit 1
+          fi
+          SIZE=$(stat -f%z "$SLICE" 2>/dev/null || stat -c%s "$SLICE")
+          echo "ExpoModulesJSI arm64 binary size=$SIZE"
+          if [ "$SIZE" -lt 10000 ]; then
+            echo "Slice looks like a stub ($SIZE bytes) — build did not produce real framework"
+            tail -n 100 /tmp/jsi-build.log || true
+            exit 1
+          fi
+          file "$SLICE" || true
+          # Stamp hash so CocoaPods script phase treats slice as up-to-date
+          HASH_FILE="$JSI_DIR/Products/ExpoModulesJSI.xcframework/ios-arm64/.build-hash"
+          if [ ! -s "$HASH_FILE" ]; then
+            # Script normally writes hash; if missing, write a token so empty stub marker is gone
+            echo "ci-prebuilt-$(date +%s)" > "$HASH_FILE"
+          fi
+          ls -la "$JSI_DIR/Products/ExpoModulesJSI.xcframework/ios-arm64/" || true
+
+      - name: Disable code signing on app target only (Pods keep defaults)
+        working-directory: withyou-app/ios
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path("WithYou.xcodeproj/project.pbxproj")
+          t = p.read_text()
+          # Force no-sign for the app project so CI can produce a binary without Apple team
+          replacements = {
+              "CODE_SIGN_STYLE = Automatic;": "CODE_SIGN_STYLE = Manual;\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;\n\t\t\t\tCODE_SIGN_IDENTITY = \"\";\n\t\t\t\tDEVELOPMENT_TEAM = \"\";",
+          }
+          for a, b in replacements.items():
+              if a in t:
+                  t = t.replace(a, b)
+          # Also blanket DEVELOPMENT_TEAM empty if present
+          import re
+          t = re.sub(r"DEVELOPMENT_TEAM = [^;]+;", 'DEVELOPMENT_TEAM = "";', t)
+          p.write_text(t)
+          print("Patched project.pbxproj for unsigned device build")
+          PY
+
+      - name: xcodebuild BUILD (not archive) → .app for device
+        working-directory: withyou-app/ios
+        env:
+          EXPO_PUBLIC_WITHYOU_API: https://crew.kingdom.forum/withyou
+        run: |
+          set -euo pipefail
+          export NODE_BINARY="$(command -v node)"
+          export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+          WORKSPACE=$(ls -d *.xcworkspace | head -n 1)
+          SCHEME="WithYou"
+          DERIVED="$PWD/build/DerivedData"
+          mkdir -p "$DERIVED" "$PWD/build"
+          echo "WORKSPACE=$WORKSPACE SCHEME=$SCHEME NODE=$NODE_BINARY"
+
+          set +e
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$DERIVED" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            build 2>&1 | tee /tmp/xcodebuild.log
+          XC=$?
+          set -e
+
+          if [ "$XC" -ne 0 ]; then
+            echo "==== errors ===="
+            grep -E "error:|❌|fatal|FAILED" /tmp/xcodebuild.log | tail -n 80 || true
+            echo "==== ExpoModulesJSI script snippets ===="
+            grep -A5 -B5 "ExpoModulesJSI" /tmp/xcodebuild.log | tail -n 80 || true
+            exit "$XC"
+          fi
+
+          APP=$(find "$DERIVED/Build/Products" -name "*.app" -type d | head -n 1)
+          echo "APP=$APP"
+          if [ -z "$APP" ] || [ ! -d "$APP" ]; then
+            echo "No .app produced"
+            find "$DERIVED/Build/Products" -maxdepth 4 -type d 2>/dev/null || true
+            exit 1
+          fi
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          du -sh "$APP"
+          ls -la "$APP" | head -n 30
+
+      - name: Pack IPA (Payload) for Sideloadly
+        working-directory: withyou-app/ios
+        run: |
+          set -euo pipefail
+          APP=$(find build/DerivedData/Build/Products -name "*.app" -type d | head -n 1)
+          echo "Packing $APP"
+          rm -rf build/Payload WithYou.ipa
+          mkdir -p build/Payload
+          cp -R "$APP" build/Payload/
+          # Sideloadly accepts standard zip-as-ipa
+          (cd build && zip -qry ../WithYou-Sideloadly.ipa Payload)
+          ls -lh WithYou-Sideloadly.ipa
+          file WithYou-Sideloadly.ipa
+          # sanity: unzip -l should show Payload/*.app
+          unzip -l WithYou-Sideloadly.ipa | head -n 20
+          cp WithYou-Sideloadly.ipa ../WithYou-Sideloadly.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WithYou-ipa-sideloadly
+          path: withyou-app/WithYou-Sideloadly.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Sideloadly install notes
+        if: success()
+        run: |
+          cat <<'EOF'
+          ✅ IPA ready: download artifact "WithYou-ipa-sideloadly"
+
+          On your Windows PC with Sideloadly:
+          1. Plug iPhone (USB), trust PC
+          2. Open Sideloadly → select WithYou-Sideloadly.ipa
+          3. Enter your FREE Apple ID (no $99 needed)
+          4. Install → on iPhone: Settings → General → VPN & Device Management → Trust
+          5. Re-sign every ~7 days with Sideloadly (same IPA)
+          EOF
