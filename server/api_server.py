@@ -461,60 +461,98 @@ class Handler(BaseHTTPRequestHandler):
         # Absolute public URLs (same host, /withyou path)
         apk_href = "https://crew.kingdom.forum/withyou/install/apk"
         ipa_href = "https://crew.kingdom.forum/withyou/install/ipa"
+        ver = "1.1.4"
         html = f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
 <meta name="theme-color" content="#0b0810"/>
-<meta name="robots" content="noindex"/>
-<title>WithYou — Install</title>
+<meta name="robots" content="noindex,nofollow"/>
+<meta name="description" content="WithYou — private couple app. Download Android APK or iPhone IPA."/>
+<title>WithYou · Install v{ver}</title>
 <style>
-body{{margin:0;min-height:100vh;background:radial-gradient(900px 500px at 50% -10%,#1a1024,#0b0810 55%);
-color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-display:flex;align-items:center;justify-content:center;padding:20px}}
-.w{{max-width:440px;width:100%}}
-h1{{color:#f8fafc;margin:0 0 6px;font-size:1.85rem;letter-spacing:-.03em;font-weight:900}}
-.badge{{display:inline-block;background:rgba(244,114,182,.14);color:#f472b6;font-size:.7rem;font-weight:800;
-padding:4px 10px;border-radius:999px;margin-bottom:12px;letter-spacing:.04em;text-transform:uppercase}}
-.t{{color:#a8b0c0;margin:0 0 20px;line-height:1.5}}
-.c{{background:#16121f;border:1px solid rgba(255,255,255,.07);border-radius:18px;padding:18px;margin-bottom:14px;
-box-shadow:0 10px 30px rgba(0,0,0,.25)}}
-.c h2{{margin:0 0 6px;font-size:1.05rem;font-weight:800}} .m{{color:#6b7289;font-size:.85rem;margin:0 0 12px}}
-a.btn{{display:block;text-align:center;background:linear-gradient(135deg,#fb8ec4,#f472b6 50%,#e85a9e);color:#1a0a12;
-font-weight:800;text-decoration:none;padding:16px;border-radius:14px;font-size:1rem;
-box-shadow:0 8px 24px rgba(244,114,182,.28)}} a.btn:active{{opacity:.9}}
-span.off{{display:block;text-align:center;background:#2d2438;color:#64748b;padding:16px;border-radius:14px;font-weight:700}}
-ol{{margin:12px 0 0;padding-left:1.2rem;color:#a8b0c0;font-size:.85rem;line-height:1.55}}
-.warn{{color:#fbbf24;font-size:.8rem;margin-top:10px;line-height:1.4}}
-.foot{{text-align:center;margin-top:18px;color:#4b5163;font-size:.75rem;line-height:1.5}}
+*{{box-sizing:border-box}}
+body{{margin:0;min-height:100vh;background:radial-gradient(1100px 560px at 50% -12%,#1a1024 0%,#0b0810 55%);
+color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;
+-webkit-font-smoothing:antialiased;padding:24px 18px 48px}}
+.w{{max-width:460px;margin:0 auto}}
+.logo{{width:64px;height:64px;border-radius:20px;display:flex;align-items:center;justify-content:center;
+font-size:1.75rem;background:linear-gradient(135deg,#fbcfe8,#f472b6 50%,#db2777);
+box-shadow:0 10px 28px rgba(244,114,182,.35);margin-bottom:14px}}
+.badge{{display:inline-flex;align-items:center;gap:6px;background:rgba(244,114,182,.14);color:#f472b6;
+font-size:.68rem;font-weight:800;padding:5px 11px;border-radius:999px;letter-spacing:.05em;
+text-transform:uppercase;margin-bottom:12px;border:1px solid rgba(244,114,182,.28)}}
+h1{{margin:0;font-size:2rem;font-weight:900;letter-spacing:-.03em}}
+.t{{color:#a8b0c0;margin:10px 0 22px;line-height:1.55;font-size:.95rem}}
+.feats{{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 20px}}
+.feat{{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:999px;
+padding:6px 11px;font-size:.72rem;font-weight:700;color:#cbd5e1}}
+.c{{background:#16121f;border:1px solid rgba(255,255,255,.07);border-radius:20px;padding:18px;
+margin-bottom:14px;box-shadow:0 12px 32px rgba(0,0,0,.28)}}
+.c h2{{margin:0 0 4px;font-size:1.08rem;font-weight:800;letter-spacing:-.02em}}
+.m{{color:#6b7289;font-size:.82rem;margin:0 0 14px;line-height:1.4}}
+a.btn{{display:block;text-align:center;background:linear-gradient(135deg,#fb8ec4,#f472b6 50%,#e85a9e);
+color:#1a0a12;font-weight:800;text-decoration:none;padding:15px 16px;border-radius:14px;font-size:.98rem;
+box-shadow:0 8px 24px rgba(244,114,182,.28);transition:transform .12s ease,opacity .12s ease}}
+a.btn:active{{transform:scale(.98);opacity:.92}}
+a.btn.ghost{{background:transparent;color:#f472b6;border:1.5px solid rgba(244,114,182,.5);
+box-shadow:none;margin-top:10px}}
+span.off{{display:block;text-align:center;background:#24182e;color:#64748b;padding:15px;border-radius:14px;font-weight:700}}
+ol{{margin:14px 0 0;padding-left:1.15rem;color:#a8b0c0;font-size:.84rem;line-height:1.55}}
+ol li{{margin-bottom:5px}}
+.warn{{color:#fbbf24;font-size:.78rem;margin-top:12px;line-height:1.45}}
+.note{{color:#6b7289;font-size:.78rem;margin-top:10px;line-height:1.45}}
+.url{{word-break:break-all;color:#4b5163;font-size:.7rem;margin-top:8px}}
+.pair{{border-left:3px solid #f472b6;padding-left:12px}}
+.pair strong{{color:#f8fafc}}
+.foot{{text-align:center;margin-top:22px;color:#4b5163;font-size:.72rem;line-height:1.55}}
 </style></head><body><div class="w">
-<span class="badge">Native apps only · APK + IPA</span>
+<div class="logo">💕</div>
+<span class="badge">v{ver} · native only · APK + IPA</span>
 <h1>WithYou</h1>
-<p class="t">Private couple app for two phones. No web app — install Android APK or iPhone IPA.</p>
+<p class="t">Private couple presence for <b>two phones</b>. Live location, battery, care notes, SOS — no public web app.</p>
+<div class="feats">
+<span class="feat">📍 Live place</span>
+<span class="feat">🔋 Battery</span>
+<span class="feat">💗 Care + SOS</span>
+<span class="feat">📊 Partner intel</span>
+<span class="feat">🔐 Your server</span>
+</div>
 <div class="c">
 <h2>Android APK</h2>
-<p class="m">{sz(apk)} · com.withyou.pair</p>
+<p class="m">{sz(apk)} · com.withyou.pair · v{ver}</p>
 {"<a class='btn' href='"+apk_href+"' download='WithYou.apk'>Download APK</a>" if apk_ok else "<span class='off'>APK missing on server</span>"}
 <ol>
 <li>Open this page in <b>Chrome</b> on Android</li>
+<li><b>Uninstall</b> any old WithYou first</li>
 <li>Tap Download APK (~70 MB — wait for it)</li>
 <li>Allow <b>Install unknown apps</b> for Chrome if asked</li>
-<li>Open the file and Install</li>
+<li>Open the file → Install → open WithYou</li>
 </ol>
-<p class="warn">If download fails: use Wi‑Fi and open again:<br>{apk_href}</p>
+<p class="note">Android uses a stable location card (opens Google Maps). In-app map is off to prevent crashes.</p>
+<p class="warn">Download stuck? Use Wi‑Fi and open:<br>{apk_href}</p>
+<p class="url">{apk_href}</p>
 </div>
 <div class="c">
 <h2>iPhone IPA</h2>
-<p class="m">{sz(ipa)} · install with Sideloadly + free Apple ID on a PC</p>
-{"<a class='btn' href='"+ipa_href+"' download='WithYou.ipa'>Download IPA</a>" if ipa_ok else "<span class='off'>IPA missing</span>"}
+<p class="m">{sz(ipa)} · Sideloadly + free Apple ID · v{ver}</p>
+{"<a class='btn' href='"+ipa_href+"' download='WithYou.ipa'>Download IPA</a>" if ipa_ok else "<span class='off'>IPA missing on server</span>"}
 <ol>
-<li>Download IPA on Windows</li>
-<li>Open in <b>Sideloadly</b> with your free Apple ID</li>
-<li>Connect iPhone by USB · install · Trust developer on phone</li>
-<li>Re-sign about every 7 days (free cert)</li>
+<li>Download IPA on a <b>Windows PC</b></li>
+<li>Open <b>Sideloadly</b> → drop IPA → free Apple ID</li>
+<li>Connect iPhone by USB → install</li>
+<li>iPhone: Settings → General → VPN &amp; Device Management → Trust</li>
+<li>Re-sign about every <b>7 days</b> (free cert)</li>
 </ol>
+<p class="url">{ipa_href}</p>
 </div>
-<p class="foot">API for the apps only · no browser version</p>
+<div class="c pair">
+<h2>How to pair</h2>
+<p class="m" style="margin-bottom:0">Phone A: <strong>Create pair</strong> → share the 6-character code.<br>
+Phone B: paste <strong>code only</strong> → <strong>Join pair</strong> (name optional).<br>
+Only one phone creates. Max 2 devices.</p>
+</div>
+<p class="foot">WithYou v{ver}<br>Native apps only · no browser version · private API</p>
 </div></body></html>"""
         data = html.encode("utf-8")
         self.send_response(200)

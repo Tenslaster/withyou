@@ -10,7 +10,12 @@ Commander PRO stays at `/downloads` only.
 | **IPA** (Sideloadly) | https://crew.kingdom.forum/withyou/install/ipa |
 | **Alt download page** | https://crew.kingdom.forum/downloads/withyou |
 
+**Current app:** WithYou **v1.1.4** (native only).
+
 **No web/PWA app** — Android APK and iPhone IPA only.
+
+- Android: location card + open in Google Maps (no in-app map — crash fix)  
+- iPhone: Apple Maps in-app when available  
 
 `/downloads` (root) = Commander PRO only.
 
