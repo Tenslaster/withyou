@@ -56,7 +56,6 @@ const API_URL = (process.env.EXPO_PUBLIC_WITHYOU_API || DEFAULT_API).replace(/\/
 const TOKEN_KEY = 'withyou_token_v1';
 const NAME_KEY = 'withyou_name_v1';
 const APP_VERSION = Constants.expoConfig?.version || '1.0.0';
-const POLL_MS = 12000;
 const HEARTBEAT_MS = 20000;
 
 const ACTIVITIES = [
@@ -88,16 +87,6 @@ const WMO = {
   95: 'Thunder',
 };
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
-
 /** Invite codes are 6 hex chars (A–F, 0–9). Strip junk users often paste. */
 function cleanInviteCode(raw) {
   return String(raw || '')
@@ -105,6 +94,58 @@ function cleanInviteCode(raw) {
     .replace(/[^A-F0-9]/g, '')
     .slice(0, 8);
 }
+
+/** Stable compare so auto-sync does not re-render the whole UI every few seconds. */
+function pairSignature(p) {
+  if (!p) return '';
+  const m = p.me || {};
+  const pr = p.partner || {};
+  const st = p.stats || {};
+  return [
+    p.distance_m,
+    p.days_together,
+    m.battery,
+    m.charging ? 1 : 0,
+    m.lat,
+    m.lng,
+    m.last_seen,
+    m.online ? 1 : 0,
+    m.mood,
+    m.status_text,
+    m.activity,
+    m.place_name,
+    m.love_note,
+    m.thinking_of_you_at,
+    m.sos_active ? 1 : 0,
+    m.motion,
+    pr.battery,
+    pr.charging ? 1 : 0,
+    pr.lat,
+    pr.lng,
+    pr.last_seen,
+    pr.online ? 1 : 0,
+    pr.mood,
+    pr.status_text,
+    pr.activity,
+    pr.place_name,
+    pr.sos_active ? 1 : 0,
+    pr.motion,
+    pr.weather_temp_c,
+    st.both_online ? 1 : 0,
+    st.care_pings_total,
+    st.love_notes_total,
+    st.max_distance_m_today,
+    st.min_distance_m_today,
+    (p.partner_trail || []).length,
+  ].join('|');
+}
+
+const DEFAULT_REGION = {
+  latitude: 45.5,
+  longitude: -73.6,
+  latitudeDelta: 0.08,
+  longitudeDelta: 0.08,
+};
 
 // --- helpers ----------------------------------------------------------------
 async function api(path, { method = 'GET', token, body } = {}) {
@@ -226,12 +267,29 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
   const mapRef = useRef(null);
   const tokenRef = useRef(null);
+  const pairSigRef = useRef('');
+  const moodRef = useRef('');
+  const statusRef = useRef('');
+  const activityRef = useRef('');
   const weatherCache = useRef({ at: 0, data: null, key: '' });
+  const mapFittedRef = useRef(false);
+  const initialMapRegion = useRef(DEFAULT_REGION);
   tokenRef.current = token;
+  moodRef.current = mood;
+  statusRef.current = statusText;
+  activityRef.current = activity;
 
   const partner = pair?.partner;
   const me = pair?.me;
   const stats = pair?.stats;
+
+  const applyPair = useCallback((data, { force = false } = {}) => {
+    if (!data) return;
+    const sig = pairSignature(data);
+    if (!force && sig === pairSigRef.current) return;
+    pairSigRef.current = sig;
+    setPair(data);
+  }, []);
 
   // Boot session
   useEffect(() => {
@@ -246,7 +304,7 @@ export default function App() {
           setToken(t);
           try {
             const data = await api('/me', { token: t });
-            setPair(data);
+            applyPair(data, { force: true });
             if (data?.me?.mood) setMood(data.me.mood);
             if (data?.me?.status_text) setStatusText(data.me.status_text);
             if (data?.me?.activity) setActivity(data.me.activity);
@@ -259,14 +317,25 @@ export default function App() {
         setBoot(false);
       }
     })();
-  }, []);
+  }, [applyPair]);
 
-  // Push notifications registration
+  // Push notifications — never at module load (crashes some Android builds)
   useEffect(() => {
     if (!token) return undefined;
     let cancelled = false;
     (async () => {
       try {
+        if (typeof Notifications.setNotificationHandler === 'function') {
+          Notifications.setNotificationHandler({
+            handleNotification: async () => ({
+              shouldShowAlert: true,
+              shouldPlaySound: true,
+              shouldSetBadge: false,
+              shouldShowBanner: true,
+              shouldShowList: true,
+            }),
+          });
+        }
         const { status: existing } = await Notifications.getPermissionsAsync();
         let final = existing;
         if (existing !== 'granted') {
@@ -288,7 +357,7 @@ export default function App() {
           });
         }
       } catch {
-        /* optional on simulators / missing FCM */
+        /* optional — missing FCM / Play services must not crash app */
       }
     })();
     return () => {
@@ -299,15 +368,24 @@ export default function App() {
   const collectTelemetry = useCallback(async () => {
     const locales = Localization.getLocales?.() || [];
     const calendars = Localization.getCalendars?.() || [];
-    const tz = calendars[0]?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || '';
-    const locale = locales[0]?.languageTag || '';
+    let tz = '';
+    let locale = '';
+    try {
+      tz =
+        calendars[0]?.timeZone ||
+        Intl.DateTimeFormat().resolvedOptions().timeZone ||
+        '';
+      locale = locales[0]?.languageTag || '';
+    } catch {
+      /* ignore */
+    }
     const hour = new Date().getHours();
     const body = {
       platform: Platform.OS,
       app_version: APP_VERSION,
-      mood: mood || undefined,
-      status_text: statusText || undefined,
-      activity: activity || undefined,
+      mood: moodRef.current || undefined,
+      status_text: statusRef.current || undefined,
+      activity: activityRef.current || undefined,
       device_model: Device.modelName || Device.modelId || '',
       device_brand: Device.brand || '',
       os_name: Device.osName || Platform.OS,
@@ -350,15 +428,21 @@ export default function App() {
         [Cellular.CellularGeneration.CELLULAR_5G]: '5G',
       };
       body.cellular_gen = map[gen] || '';
-      body.carrier = (await Cellular.getCarrierNameAsync()) || '';
+      try {
+        body.carrier = (await Cellular.getCarrierNameAsync()) || '';
+      } catch {
+        body.carrier = '';
+      }
     } catch {
-      /* optional */
+      /* optional — avoid crash without phone permission */
     }
     try {
       const { status } = await Location.getForegroundPermissionsAsync();
       if (status === 'granted') {
         const loc = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Balanced,
+          maximumAge: 15000,
+          mayShowUserSettingsDialog: false,
         });
         body.lat = loc.coords.latitude;
         body.lng = loc.coords.longitude;
@@ -376,7 +460,6 @@ export default function App() {
         }
         if (loc.coords.altitude != null) body.altitude_m = loc.coords.altitude;
 
-        // reverse geocode
         try {
           const places = await Location.reverseGeocodeAsync({
             latitude: body.lat,
@@ -394,7 +477,6 @@ export default function App() {
           /* geocode optional */
         }
 
-        // weather (cached ~10 min)
         const wkey = `${body.lat.toFixed(2)},${body.lng.toFixed(2)}`;
         const now = Date.now();
         if (
@@ -415,43 +497,48 @@ export default function App() {
       /* location denied */
     }
     return body;
-  }, [mood, statusText, activity]);
+  }, []);
 
-  const heartbeat = useCallback(async () => {
-    const t = tokenRef.current;
-    if (!t) return;
-    setSyncing(true);
-    try {
-      const body = await collectTelemetry();
-      const data = await api('/heartbeat', { method: 'POST', token: t, body });
-      if (data?.ok) setPair(data);
-      setErr('');
-    } catch (e) {
-      setErr(e.message || 'Sync failed');
-    } finally {
-      setSyncing(false);
-    }
-  }, [collectTelemetry]);
+  const heartbeat = useCallback(
+    async ({ quiet = true } = {}) => {
+      const t = tokenRef.current;
+      if (!t) return;
+      if (!quiet) setSyncing(true);
+      try {
+        const body = await collectTelemetry();
+        const data = await api('/heartbeat', { method: 'POST', token: t, body });
+        if (data?.ok) applyPair(data);
+        setErr('');
+      } catch (e) {
+        // Quiet background errors — only show on manual sync
+        if (!quiet) setErr(e.message || 'Sync failed');
+      } finally {
+        if (!quiet) setSyncing(false);
+      }
+    },
+    [collectTelemetry, applyPair]
+  );
 
   const refresh = useCallback(async () => {
     const t = tokenRef.current;
     if (!t) return;
     setRefreshing(true);
     try {
-      const data = await api('/me', { token: t });
-      setPair(data);
+      // One path: heartbeat already returns full pair — no double /me + layout thrash
+      await heartbeat({ quiet: true });
       setErr('');
     } catch (e) {
       setErr(e.message || 'Refresh failed');
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [heartbeat]);
 
-  // Permissions + loops
+  // Permissions + loops — deps only on token so mood typing does not reset timers
   useEffect(() => {
     if (!token) return undefined;
     let alive = true;
+    let hbTimer = null;
     (async () => {
       try {
         const fg = await Location.requestForegroundPermissionsAsync();
@@ -459,30 +546,26 @@ export default function App() {
           try {
             await Location.requestBackgroundPermissionsAsync();
           } catch {
-            /* Expo Go may limit */
+            /* optional */
           }
         }
       } catch {
         /* ignore */
       }
-      if (alive) heartbeat();
+      if (alive) heartbeat({ quiet: true });
     })();
-    const h = setInterval(() => {
-      if (AppState.currentState === 'active') heartbeat();
+    hbTimer = setInterval(() => {
+      if (AppState.currentState === 'active') heartbeat({ quiet: true });
     }, HEARTBEAT_MS);
-    const p = setInterval(() => {
-      if (AppState.currentState === 'active') refresh();
-    }, POLL_MS);
     const sub = AppState.addEventListener('change', (s) => {
-      if (s === 'active') heartbeat();
+      if (s === 'active') heartbeat({ quiet: true });
     });
     return () => {
       alive = false;
-      clearInterval(h);
-      clearInterval(p);
+      if (hbTimer) clearInterval(hbTimer);
       sub.remove();
     };
-  }, [token, heartbeat, refresh]);
+  }, [token, heartbeat]);
 
   const createPair = async () => {
     const n = (name || '').trim() || 'Me';
@@ -505,14 +588,17 @@ export default function App() {
       await SecureStore.setItemAsync(NAME_KEY, n);
       setToken(data.token);
       setCreatedInvite(data.invite_code || '');
-      setPair({
-        me: data.me,
-        partner: data.partner,
-        invite_code: data.invite_code,
-        days_together: data.days_together ?? 0,
-        distance_m: null,
-        partner_joined: false,
-      });
+      applyPair(
+        {
+          me: data.me,
+          partner: data.partner,
+          invite_code: data.invite_code,
+          days_together: data.days_together ?? 0,
+          distance_m: null,
+          partner_joined: false,
+        },
+        { force: true }
+      );
       const code = data.invite_code;
       Alert.alert(
         'Invite code ready',
@@ -566,7 +652,7 @@ export default function App() {
       await SecureStore.setItemAsync(TOKEN_KEY, data.token);
       await SecureStore.setItemAsync(NAME_KEY, n);
       setToken(data.token);
-      setPair(data);
+      applyPair(data, { force: true });
     } catch (e) {
       const msg = e.message || 'Join failed';
       if (e.status === 404) {
@@ -595,6 +681,8 @@ export default function App() {
           }
           await SecureStore.deleteItemAsync(TOKEN_KEY);
           setToken(null);
+          pairSigRef.current = '';
+          mapFittedRef.current = false;
           setPair(null);
           setCreatedInvite('');
         },
@@ -614,7 +702,7 @@ export default function App() {
         token,
         body: { note },
       });
-      setPair(data);
+      applyPair(data, { force: true });
       setLoveDraft('');
       hapticSuccess();
       Alert.alert('Sent', 'Your partner will see this note.');
@@ -626,7 +714,7 @@ export default function App() {
   const sendPing = async () => {
     try {
       const data = await api('/care/ping', { method: 'POST', token, body: {} });
-      setPair(data);
+      applyPair(data, { force: true });
       hapticSuccess();
       Alert.alert('Sent', 'Thinking of you — partner notified.');
     } catch (e) {
@@ -649,7 +737,7 @@ export default function App() {
                 token,
                 body: { active: true, message: 'I need you — please check on me' },
               });
-              setPair(data);
+              applyPair(data, { force: true });
             } catch (e) {
               Alert.alert('Failed', e.message);
             }
@@ -663,7 +751,7 @@ export default function App() {
           token,
           body: { active: false },
         });
-        setPair(data);
+        applyPair(data, { force: true });
       } catch (e) {
         Alert.alert('Failed', e.message);
       }
@@ -677,9 +765,9 @@ export default function App() {
         token,
         body: { lat: me?.lat, lng: me?.lng },
       });
-      setPair(data);
+      applyPair(data, { force: true });
       Alert.alert('Home saved', 'Partner can see when you are at home.');
-      heartbeat();
+      heartbeat({ quiet: false });
     } catch (e) {
       Alert.alert('Failed', e.message || 'Need GPS first');
     }
@@ -693,54 +781,50 @@ export default function App() {
         token,
         body: { activity: id },
       });
-      setPair(data);
-      heartbeat();
+      applyPair(data, { force: true });
+      heartbeat({ quiet: true });
     } catch {
       /* heartbeat will sync */
     }
   };
 
-  const region = useMemo(() => {
+  // Fit map once when we first have real GPS (never control region every poll)
+  useEffect(() => {
     const pts = [];
-    if (me?.lat != null && me?.lng != null) pts.push({ latitude: me.lat, longitude: me.lng });
+    if (me?.lat != null && me?.lng != null) {
+      pts.push({ latitude: Number(me.lat), longitude: Number(me.lng) });
+    }
     if (partner?.lat != null && partner?.lng != null) {
-      pts.push({ latitude: partner.lat, longitude: partner.lng });
+      pts.push({ latitude: Number(partner.lat), longitude: Number(partner.lng) });
     }
-    if (!pts.length) {
-      return {
-        latitude: 45.5,
-        longitude: -73.6,
-        latitudeDelta: 0.08,
-        longitudeDelta: 0.08,
-      };
+    if (!pts.length || !mapRef.current) return;
+    if (mapFittedRef.current) return;
+    try {
+      if (pts.length === 1) {
+        const r = {
+          ...pts[0],
+          latitudeDelta: 0.025,
+          longitudeDelta: 0.025,
+        };
+        initialMapRegion.current = r;
+        mapRef.current.animateToRegion?.(r, 400);
+      } else {
+        mapRef.current.fitToCoordinates?.(pts, {
+          edgePadding: { top: 48, right: 48, bottom: 48, left: 48 },
+          animated: true,
+        });
+      }
+      mapFittedRef.current = true;
+    } catch {
+      /* map not ready */
     }
-    if (pts.length === 1) {
-      return {
-        latitude: pts[0].latitude,
-        longitude: pts[0].longitude,
-        latitudeDelta: 0.02,
-        longitudeDelta: 0.02,
-      };
-    }
-    const lats = pts.map((p) => p.latitude);
-    const lngs = pts.map((p) => p.longitude);
-    const minLat = Math.min(...lats);
-    const maxLat = Math.max(...lats);
-    const minLng = Math.min(...lngs);
-    const maxLng = Math.max(...lngs);
-    return {
-      latitude: (minLat + maxLat) / 2,
-      longitude: (minLng + maxLng) / 2,
-      latitudeDelta: Math.max(0.02, (maxLat - minLat) * 1.8),
-      longitudeDelta: Math.max(0.02, (maxLng - minLng) * 1.8),
-    };
   }, [me?.lat, me?.lng, partner?.lat, partner?.lng]);
 
   const trailCoords = useMemo(() => {
     const t = pair?.partner_trail || [];
     return t
       .filter((h) => h.lat != null && h.lng != null)
-      .map((h) => ({ latitude: h.lat, longitude: h.lng }));
+      .map((h) => ({ latitude: Number(h.lat), longitude: Number(h.lng) }));
   }, [pair?.partner_trail]);
 
   if (boot) {
@@ -861,12 +945,16 @@ export default function App() {
       <ScrollView
         contentContainerStyle={styles.padBottom}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        // Keep scroll position stable while pair data updates in background
+        removeClippedSubviews={Platform.OS === 'android'}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
             onRefresh={refresh}
             tintColor={T.pink}
             colors={[T.pink]}
+            progressBackgroundColor={T.card}
           />
         }
       >
@@ -1002,9 +1090,15 @@ export default function App() {
                 ref={mapRef}
                 style={styles.map}
                 provider={PROVIDER_DEFAULT}
-                initialRegion={region}
-                region={region}
-                userInterfaceStyle="dark"
+                initialRegion={initialMapRegion.current}
+                // Do NOT pass controlled `region` — it jumps the map/page every sync
+                rotateEnabled={false}
+                pitchEnabled={false}
+                toolbarEnabled={false}
+                moveOnMarkerPress={false}
+                loadingEnabled
+                loadingIndicatorColor={T.pink}
+                loadingBackgroundColor={T.bg}
               >
                 {trailCoords.length > 1 ? (
                   <Polyline
@@ -1015,21 +1109,29 @@ export default function App() {
                 ) : null}
                 {me?.lat != null && me?.lng != null ? (
                   <Marker
-                    coordinate={{ latitude: me.lat, longitude: me.lng }}
+                    coordinate={{
+                      latitude: Number(me.lat),
+                      longitude: Number(me.lng),
+                    }}
                     title={me.display_name || 'You'}
                     description={me.place_name || 'You'}
                     pinColor="#38bdf8"
+                    tracksViewChanges={false}
                   />
                 ) : null}
                 {partner?.lat != null && partner?.lng != null ? (
                   <Marker
-                    coordinate={{ latitude: partner.lat, longitude: partner.lng }}
+                    coordinate={{
+                      latitude: Number(partner.lat),
+                      longitude: Number(partner.lng),
+                    }}
                     title={partner.display_name || 'Partner'}
                     description={
                       partner.place_name ||
                       (partner.online ? 'Online' : fmtAgo(partner.last_seen))
                     }
                     pinColor="#f472b6"
+                    tracksViewChanges={false}
                   />
                 ) : null}
               </MapView>
@@ -1120,7 +1222,10 @@ export default function App() {
                   <Text style={styles.actionEmoji}>🏠</Text>
                   <Text style={styles.actionLbl}>Set home here</Text>
                 </SoftPress>
-                <SoftPress style={styles.actionTile} onPress={heartbeat}>
+                <SoftPress
+                  style={styles.actionTile}
+                  onPress={() => heartbeat({ quiet: false })}
+                >
                   <Text style={styles.actionEmoji}>↻</Text>
                   <Text style={styles.actionLbl}>Sync now</Text>
                 </SoftPress>
@@ -1178,7 +1283,7 @@ export default function App() {
               />
               <PrimaryButton
                 title="Update status"
-                onPress={heartbeat}
+                onPress={() => heartbeat({ quiet: false })}
                 loading={syncing}
                 style={{ marginTop: 10 }}
               />

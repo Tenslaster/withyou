@@ -64,7 +64,7 @@ export function hapticSuccess() {
   }
 }
 
-/** Pressable with soft scale + opacity — feels like production apps */
+/** Pressable with light feedback — no Animated on Android (avoids crash / jank) */
 export function SoftPress({
   children,
   onPress,
@@ -74,8 +74,11 @@ export function SoftPress({
   accessibilityLabel,
   hitSlop,
 }) {
+  // iOS can use a tiny scale; Android stays simple for stability
   const scale = useRef(new Animated.Value(1)).current;
+  const useAnim = Platform.OS === 'ios';
   const pressIn = () => {
+    if (!useAnim) return;
     Animated.spring(scale, {
       toValue: 0.97,
       useNativeDriver: true,
@@ -84,6 +87,7 @@ export function SoftPress({
     }).start();
   };
   const pressOut = () => {
+    if (!useAnim) return;
     Animated.spring(scale, {
       toValue: 1,
       useNativeDriver: true,
@@ -101,14 +105,31 @@ export function SoftPress({
       onPressOut={pressOut}
       onPress={() => {
         if (disabled) return;
-        if (haptic === 'med') hapticMed();
-        else if (haptic === 'success') hapticSuccess();
-        else if (haptic !== 'none') hapticLight();
-        onPress?.();
+        try {
+          if (haptic === 'med') hapticMed();
+          else if (haptic === 'success') hapticSuccess();
+          else if (haptic !== 'none') hapticLight();
+        } catch {
+          /* ignore */
+        }
+        try {
+          onPress?.();
+        } catch {
+          /* never crash UI from button handler */
+        }
       }}
-      style={({ pressed }) => [{ opacity: disabled ? 0.45 : pressed ? 0.92 : 1 }, style]}
+      style={({ pressed }) => [
+        { opacity: disabled ? 0.45 : pressed ? 0.88 : 1 },
+        style,
+      ]}
     >
-      <Animated.View style={{ transform: [{ scale }], width: '100%' }}>{children}</Animated.View>
+      {useAnim ? (
+        <Animated.View style={{ transform: [{ scale }], width: '100%' }}>
+          {children}
+        </Animated.View>
+      ) : (
+        <View style={{ width: '100%' }}>{children}</View>
+      )}
     </Pressable>
   );
 }
@@ -249,6 +270,8 @@ export function BatteryBar({ pct, charging, lowPower }) {
   const p = pct == null ? 0 : Math.max(0, Math.min(100, Math.round(pct)));
   const color =
     charging ? T.green : p <= 15 ? T.red : p <= 30 ? T.amber : T.blue;
+  // flex-based fill (percentage width can glitch/crash on some Android layouts)
+  const fillFlex = pct == null ? 0 : Math.max(0.02, p / 100);
   return (
     <View style={ui.battWrap}>
       <View style={ui.battTop}>
@@ -259,20 +282,23 @@ export function BatteryBar({ pct, charging, lowPower }) {
         </Text>
       </View>
       <View style={ui.battTrack}>
-        <LinearGradient
-          colors={
-            charging
-              ? ['#6EE7B7', '#34D399']
-              : p <= 15
-                ? ['#FCA5A5', '#F87171']
-                : p <= 30
-                  ? ['#FCD34D', '#FBBF24']
-                  : ['#7DD3FC', '#38BDF8']
-          }
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
-          style={[ui.battFill, { width: `${pct == null ? 0 : p}%` }]}
-        />
+        <View style={{ flex: fillFlex, minWidth: pct == null ? 0 : 4 }}>
+          <LinearGradient
+            colors={
+              charging
+                ? ['#6EE7B7', '#34D399']
+                : p <= 15
+                  ? ['#FCA5A5', '#F87171']
+                  : p <= 30
+                    ? ['#FCD34D', '#FBBF24']
+                    : ['#7DD3FC', '#38BDF8']
+            }
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={ui.battFill}
+          />
+        </View>
+        <View style={{ flex: Math.max(0.001, 1 - fillFlex) }} />
       </View>
     </View>
   );
@@ -452,8 +478,9 @@ const ui = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: 'rgba(255,255,255,0.06)',
     overflow: 'hidden',
+    flexDirection: 'row',
   },
-  battFill: { height: '100%', borderRadius: 999, minWidth: 4 },
+  battFill: { height: 8, borderRadius: 999, width: '100%' },
   metric: {
     width: '33.33%',
     paddingHorizontal: 4,
